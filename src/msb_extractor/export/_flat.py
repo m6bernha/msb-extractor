@@ -1,23 +1,25 @@
-"""Flat 'Raw Log' xlsx exporter.
-
-Three sheets for Phase 1:
-    Raw Log         one row per set (actuals when available, prescription otherwise)
-    Exercise Index  per-exercise totals and date range
-    Summary         coverage report, totals, legend
-"""
+"""Flat sheet writers: Raw Log, Exercise Index, Summary."""
 
 from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
-from openpyxl import Workbook
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
+from msb_extractor.export._styles import (
+    DETAIL_FILL,
+    HEADER_ALIGN,
+    HEADER_FILL,
+    HEADER_FONT,
+    LABEL_FONT,
+    STATUS_COLORS,
+    TITLE_FONT,
+    WRAP_ALIGN,
+)
 from msb_extractor.models import (
     ActualSet,
     DataSource,
@@ -27,24 +29,8 @@ from msb_extractor.models import (
     SetStatus,
     TrainingDay,
 )
-from msb_extractor.normalize.exercise import apply_rename, load_rename_map
+from msb_extractor.normalize.exercise import apply_rename
 from msb_extractor.normalize.units import Unit, format_load
-
-_HEADER_FILL = PatternFill("solid", fgColor="1F2937")
-_HEADER_FONT = Font(bold=True, color="FFFFFF", size=11)
-_DETAIL_FILL = PatternFill("solid", fgColor="DCFCE7")
-_SUMMARY_TITLE_FONT = Font(bold=True, size=14, color="1F2937")
-_SUMMARY_LABEL_FONT = Font(bold=True, color="1F2937")
-_THIN = Side(style="thin", color="D1D5DB")
-_CELL_BORDER = Border(left=_THIN, right=_THIN, top=_THIN, bottom=_THIN)
-
-_STATUS_COLORS: dict[SetStatus, str] = {
-    SetStatus.COMPLETED: "166534",
-    SetStatus.PARTIAL: "92400E",
-    SetStatus.MISSED: "991B1B",
-    SetStatus.PRESCRIBED: "1D4ED8",
-    SetStatus.UNKNOWN: "6B7280",
-}
 
 _RAW_COLUMNS: list[tuple[str, str, int]] = [
     ("date", "Date", 12),
@@ -72,35 +58,7 @@ _INDEX_COLUMNS: list[tuple[str, int]] = [
 ]
 
 
-def write_xlsx(
-    result: ParseResult,
-    output_path: str | Path,
-    unit: Unit = "kg",
-    rename_map_path: str | Path | None = None,
-) -> Path:
-    """Write a parsed training log to an xlsx file and return the path."""
-    rename_map = load_rename_map(rename_map_path)
-    wb = Workbook()
-
-    ws_raw = wb.active
-    if ws_raw is None:
-        ws_raw = wb.create_sheet("Raw Log")
-    else:
-        ws_raw.title = "Raw Log"
-    _write_raw_log(ws_raw, result, unit, rename_map)
-
-    ws_index = wb.create_sheet("Exercise Index")
-    _write_exercise_index(ws_index, result, rename_map)
-
-    ws_summary = wb.create_sheet("Summary")
-    _write_summary(ws_summary, result, unit, rename_map)
-
-    path = Path(output_path)
-    wb.save(path)
-    return path
-
-
-def _write_raw_log(
+def write_raw_log(
     ws: Worksheet,
     result: ParseResult,
     unit: Unit,
@@ -108,9 +66,9 @@ def _write_raw_log(
 ) -> None:
     for col_idx, (_key, label, width) in enumerate(_RAW_COLUMNS, start=1):
         cell = ws.cell(row=1, column=col_idx, value=label)
-        cell.font = _HEADER_FONT
-        cell.fill = _HEADER_FILL
-        cell.alignment = Alignment(horizontal="left", vertical="center")
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        cell.alignment = HEADER_ALIGN
         ws.column_dimensions[get_column_letter(col_idx)].width = width
 
     row = 2
@@ -132,7 +90,6 @@ def _expand_rows(
     ex: Exercise,
     display_name: str,
 ) -> list[dict[str, Any]]:
-    """Yield one dict per set, preferring actuals and falling back to prescription."""
     rows: list[dict[str, Any]] = []
 
     if ex.actuals:
@@ -176,18 +133,19 @@ def _row_from_actual(
     pres: PrescribedSet | None,
     actual: ActualSet,
 ) -> dict[str, Any]:
+    effective_status = (
+        actual.status
+        if actual.status != SetStatus.UNKNOWN
+        else (pres.status if pres else SetStatus.UNKNOWN)
+    )
     return {
         "date": day.date,
         "day": day.date.strftime("%a"),
         "order": ex.order,
         "exercise": display_name,
         "target": pres.target_text if pres else "",
-        "status": actual.status.value
-        if actual.status != SetStatus.UNKNOWN
-        else (pres.status.value if pres else ""),
-        "status_enum": actual.status
-        if actual.status != SetStatus.UNKNOWN
-        else (pres.status if pres else SetStatus.UNKNOWN),
+        "status": effective_status.value,
+        "status_enum": effective_status,
         "set_number": actual.set_number,
         "reps": actual.reps,
         "rpe": actual.rpe,
@@ -233,65 +191,52 @@ def _write_row(
     unit: Unit,
     source: DataSource,
 ) -> None:
-    status_enum = data.get("status_enum", SetStatus.UNKNOWN)
+    status_enum: SetStatus = data.get("status_enum", SetStatus.UNKNOWN)
     is_detail = source == DataSource.FULL_DETAIL
 
     for col_idx, (key, _label, _w) in enumerate(_RAW_COLUMNS, start=1):
-        value: Any
-        number_format: str | None = None
-        align: Alignment | None = None
-
-        if key == "date":
-            value = data["date"]
-            number_format = "yyyy-mm-dd"
-        elif key == "day":
-            value = data["day"]
-        elif key == "order":
-            value = data["order"]
-        elif key == "exercise":
-            value = data["exercise"]
-        elif key == "target":
-            value = data["target"]
-        elif key == "status":
-            value = data["status"] or ""
-        elif key == "set_number":
-            value = data["set_number"]
-        elif key == "reps":
-            value = data["reps"]
-        elif key == "rpe":
-            value = data["rpe"]
-            number_format = "0.0"
-        elif key == "load":
-            load_kg = data.get("load")
-            display = data.get("load_display")
-            value = (
-                format_load(load_kg, unit, decimals=1) if load_kg is not None else (display or "")
-            )
-        elif key == "percent_1rm":
-            value = data["percent_1rm"]
-            number_format = "0%"
-        elif key == "e1rm":
-            value = format_load(data["e1rm"], unit, decimals=1) if data["e1rm"] else ""
-        elif key == "comment":
-            value = data["comment"]
-            align = Alignment(wrap_text=True, vertical="top")
-        elif key == "data_source":
-            value = data["data_source"]
-        else:
-            value = ""
-
+        value: Any = _cell_value(key, data, unit)
+        number_format = _cell_format(key)
         cell = ws.cell(row=row, column=col_idx, value=value)
         if number_format:
             cell.number_format = number_format
-        if align:
-            cell.alignment = align
+        if key == "comment":
+            cell.alignment = WRAP_ALIGN
         if is_detail:
-            cell.fill = _DETAIL_FILL
-        if key == "status" and status_enum in _STATUS_COLORS:
-            cell.font = Font(color=_STATUS_COLORS[status_enum], bold=True)
+            cell.fill = DETAIL_FILL
+        if key == "status" and status_enum in STATUS_COLORS:
+            cell.font = Font(color=STATUS_COLORS[status_enum], bold=True)
 
 
-def _write_exercise_index(
+def _cell_value(key: str, data: dict[str, Any], unit: Unit) -> Any:
+    if key == "date":
+        return data["date"]
+    if key == "load":
+        load_kg = data.get("load")
+        display = data.get("load_display")
+        if load_kg is not None:
+            return format_load(load_kg, unit, decimals=1)
+        return display or ""
+    if key == "e1rm":
+        return format_load(data["e1rm"], unit, decimals=1) if data["e1rm"] else ""
+    if key == "status":
+        return data["status"] or ""
+    if key in ("day", "order", "exercise", "target", "comment", "data_source"):
+        return data[key]
+    return data.get(key)
+
+
+def _cell_format(key: str) -> str | None:
+    if key == "date":
+        return "yyyy-mm-dd"
+    if key == "rpe":
+        return "0.0"
+    if key == "percent_1rm":
+        return "0%"
+    return None
+
+
+def write_exercise_index(
     ws: Worksheet,
     result: ParseResult,
     rename_map: dict[str, str],
@@ -311,8 +256,8 @@ def _write_exercise_index(
 
     for col_idx, (label, width) in enumerate(_INDEX_COLUMNS, start=1):
         cell = ws.cell(row=1, column=col_idx, value=label)
-        cell.font = _HEADER_FONT
-        cell.fill = _HEADER_FILL
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
         ws.column_dimensions[get_column_letter(col_idx)].width = width
 
     ordered = sorted(stats.items(), key=lambda kv: (-kv[1]["sets"], kv[0]))
@@ -330,7 +275,7 @@ def _write_exercise_index(
     ws.auto_filter.ref = f"A1:{last_col}{max(len(ordered) + 1, 1)}"
 
 
-def _write_summary(
+def write_summary(
     ws: Worksheet,
     result: ParseResult,
     unit: Unit,
@@ -340,7 +285,7 @@ def _write_summary(
     ws.column_dimensions["B"].width = 60
 
     title_cell = ws.cell(row=1, column=1, value="MSB Extractor - Training Log Summary")
-    title_cell.font = _SUMMARY_TITLE_FONT
+    title_cell.font = TITLE_FONT
 
     date_range = result.date_range
     first = date_range[0].isoformat() if date_range else "n/a"
@@ -369,13 +314,10 @@ def _write_summary(
     for row_idx, (label, value) in enumerate(rows, start=3):
         label_cell = ws.cell(row=row_idx, column=1, value=label)
         if label:
-            label_cell.font = _SUMMARY_LABEL_FONT
+            label_cell.font = LABEL_FONT
         ws.cell(row=row_idx, column=2, value=value)
 
     if rename_map:
-        ws.cell(
-            row=len(rows) + 4,
-            column=1,
-            value="Applied rename map",
-        ).font = _SUMMARY_LABEL_FONT
-        ws.cell(row=len(rows) + 4, column=2, value=f"{len(rename_map)} entries")
+        rename_row = len(rows) + 4
+        ws.cell(row=rename_row, column=1, value="Applied rename map").font = LABEL_FONT
+        ws.cell(row=rename_row, column=2, value=f"{len(rename_map)} entries")

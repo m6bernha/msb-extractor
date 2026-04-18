@@ -7,11 +7,11 @@ from typing import Any
 
 from openpyxl import load_workbook
 
-from msb_extractor.export.xlsx_flat import write_xlsx
+from msb_extractor.export import write_xlsx
 from msb_extractor.parser.capture import parse_capture
 
 
-def test_write_xlsx_creates_file_and_sheets(
+def test_write_xlsx_creates_file_and_all_sheets(
     tmp_path: Path,
     capture_json: dict[str, Any],
 ) -> None:
@@ -20,7 +20,30 @@ def test_write_xlsx_creates_file_and_sheets(
     assert out.exists()
 
     wb = load_workbook(out)
-    assert wb.sheetnames == ["Raw Log", "Exercise Index", "Summary"]
+    assert "Raw Log" in wb.sheetnames
+    assert "Exercise Progress" in wb.sheetnames
+    assert "Exercise Index" in wb.sheetnames
+    assert "Summary" in wb.sheetnames
+    # At least one weekly sheet was created for the test capture.
+    weekly_sheets = [s for s in wb.sheetnames if s.startswith("Week ")]
+    assert len(weekly_sheets) >= 1
+
+
+def test_write_xlsx_respects_include_flags(
+    tmp_path: Path,
+    capture_json: dict[str, Any],
+) -> None:
+    result = parse_capture(capture_json)
+    out = write_xlsx(
+        result,
+        tmp_path / "minimal.xlsx",
+        include_weekly=False,
+        include_progress=False,
+    )
+    wb = load_workbook(out)
+    assert "Raw Log" in wb.sheetnames
+    assert "Exercise Progress" not in wb.sheetnames
+    assert not any(s.startswith("Week ") for s in wb.sheetnames)
 
 
 def test_raw_log_has_header_row(tmp_path: Path, capture_json: dict[str, Any]) -> None:

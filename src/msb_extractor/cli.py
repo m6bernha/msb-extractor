@@ -10,7 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 from msb_extractor import __version__
-from msb_extractor.export.xlsx_flat import write_xlsx
+from msb_extractor.export import write_xlsx
 from msb_extractor.models import DataSource
 from msb_extractor.normalize.units import Unit
 from msb_extractor.parser.capture import parse_capture_file
