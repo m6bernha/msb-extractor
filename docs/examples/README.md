@@ -11,10 +11,10 @@ run against a real MyStrengthBook capture.
 
 ## What the demo contains
 
-- 12 training days across 4 calendar weeks (Mon / Wed / Fri split)
+- 18 training days across 6 calendar weeks (Mon / Wed / Fri split)
 - 12 exercises (Bench / OHP / Deadlift / Squat / RDL / rows / etc.)
 - Realistic weekly progression, per-set RPE drift, an intentional missed
-  rep in week 3, a handful of per-set comments
-- Every output sheet populated: Raw Log, Week 2026-03-02 through
-  Week 2026-03-23, Exercise Progress, Exercise Index, Summary, and the
-  e1RM Charts sheet with one line chart per primary lift
+  rep in week 5, a handful of per-set comments
+- Every output sheet populated: Raw Log, one sheet per training week,
+  Exercise Progress, Exercise Index, Summary, and the e1RM Charts sheet
+  with a line chart per exercise

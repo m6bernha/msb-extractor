@@ -92,11 +92,11 @@ def build_exercise(
 
 
 def build_demo() -> ParseResult:
-    """Return a 4-week Push / Pull / Legs block as a ``ParseResult``."""
-    block_start = date(2026, 3, 2)  # a Monday
+    """Return a 6-week Push / Pull / Legs block as a ``ParseResult``."""
+    block_start = date(2026, 2, 16)  # a Monday, 6 weeks before mid-Apr
     days: list[TrainingDay] = []
 
-    for week_idx in range(4):
+    for week_idx in range(6):
         progress = week_idx * 2.5  # linear weekly bump
 
         push_day = block_start + timedelta(days=week_idx * 7)
@@ -129,7 +129,7 @@ def build_demo() -> ParseResult:
                 rpe=8.0,
                 base_load_kg=55 + progress * 0.5,
                 comment_first="Felt the left shoulder in set 3",
-                miss_last=week_idx == 2,
+                miss_last=week_idx == 4,
             ),
             build_exercise(
                 "D",
@@ -149,7 +149,7 @@ def build_demo() -> ParseResult:
                 reps=5,
                 rpe=8.0,
                 base_load_kg=150 + progress,
-                comment_first=("PR week - send it" if week_idx == 3 else None),
+                comment_first=("PR week - send it" if week_idx == 5 else None),
             ),
             build_exercise(
                 "B",
