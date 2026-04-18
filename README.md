@@ -3,7 +3,7 @@
 > Extract your own MyStrengthBook training data into a portable, offline spreadsheet.
 > Free. Open source. Runs entirely on your machine.
 
-[![CI](https://github.com/matthiasbernhard/msb-extractor/actions/workflows/ci.yml/badge.svg)](https://github.com/matthiasbernhard/msb-extractor/actions/workflows/ci.yml)
+[![CI](https://github.com/m6bernha/msb-extractor/actions/workflows/ci.yml/badge.svg)](https://github.com/m6bernha/msb-extractor/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 
@@ -248,7 +248,7 @@ Requires Python 3.11 or newer.
 ### From source
 
 ```bash
-git clone https://github.com/matthiasbernhard/msb-extractor.git
+git clone https://github.com/m6bernha/msb-extractor.git
 cd msb-extractor
 pip install -e .
 ```

@@ -20,7 +20,7 @@ all welcome.
 ## Dev setup
 
 ```bash
-git clone https://github.com/matthiasbernhard/msb-extractor.git
+git clone https://github.com/m6bernha/msb-extractor.git
 cd msb-extractor
 python -m venv .venv
 source .venv/bin/activate       # Windows: .venv\Scripts\activate

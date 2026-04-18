@@ -46,9 +46,9 @@ dev = [
 msb-extractor = "msb_extractor.cli:app"
 
 [project.urls]
-Homepage = "https://github.com/matthiasbernhard/msb-extractor"
-Issues = "https://github.com/matthiasbernhard/msb-extractor/issues"
-Source = "https://github.com/matthiasbernhard/msb-extractor"
+Homepage = "https://github.com/m6bernha/msb-extractor"
+Issues = "https://github.com/m6bernha/msb-extractor/issues"
+Source = "https://github.com/m6bernha/msb-extractor"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/msb_extractor"]

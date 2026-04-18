@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: Troubleshooting guide
-    url: https://github.com/matthiasbernhard/msb-extractor/blob/main/docs/troubleshooting.md
+    url: https://github.com/m6bernha/msb-extractor/blob/main/docs/troubleshooting.md
     about: Check the troubleshooting doc first - most common issues are covered there.

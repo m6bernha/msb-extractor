@@ -14,7 +14,7 @@ to regenerate ``demo_training_log.xlsx`` in this folder.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from msb_extractor.export import write_xlsx
@@ -80,11 +80,7 @@ def build_exercise(
                 load_display=f"{load} kg",
                 e1rm_kg=epley_e1rm(load, achieved_reps),
                 comment=comment_first if i == 0 else None,
-                status=(
-                    SetStatus.PARTIAL
-                    if miss_last and i == sets - 1
-                    else SetStatus.COMPLETED
-                ),
+                status=(SetStatus.PARTIAL if miss_last and i == sets - 1 else SetStatus.COMPLETED),
             )
         )
 
@@ -237,7 +233,7 @@ def build_demo() -> ParseResult:
 
     return ParseResult(
         days=days,
-        captured_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
+        captured_at=datetime(2026, 4, 1, tzinfo=UTC),
         source="demo.example.com",
     )
 
@@ -247,8 +243,10 @@ def main() -> None:
     out_path = Path(__file__).parent / "demo_training_log.xlsx"
     write_xlsx(result, out_path)
     print(f"Wrote {out_path}")
-    print(f"  {len(result.days)} training days, {result.total_sets} sets, "
-          f"{len(result.exercise_names)} exercises")
+    print(
+        f"  {len(result.days)} training days, {result.total_sets} sets, "
+        f"{len(result.exercise_names)} exercises"
+    )
 
 
 if __name__ == "__main__":
