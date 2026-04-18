@@ -59,3 +59,45 @@ def test_prescribed_statuses_attached(day_detail_html: str) -> None:
     assert day is not None
     bench = day.exercises[0]
     assert bench.prescribed[0].status == SetStatus.COMPLETED
+
+
+def test_data_full_comment_overrides_truncated_preview() -> None:
+    """The scraper writes data-full-comment to carry MSB's full set comment.
+
+    MSB server-renders only a ~40-char preview ending in '...' for long
+    per-set comments; the full text is not in the initial HTML. The scraper's
+    comment-expansion step injects data-full-comment; the parser must prefer
+    it over the visible truncated text.
+    """
+    full = (
+        "1x10 @135lbs, Paused x4\n1x8 @225lbs, Paused x2 slow eccentric, felt the groove come back"
+    )
+    html = f"""
+    <html><body><ul>
+    <li class="Program-Editor-Exercise is-actuals">
+      <span class="calendar-prefix">A</span>
+      <p>Competition (squat)</p>
+      <div class="actuals-outcomes-container set0">
+        <div class="target-status">
+          <span class="circle-status completed"></span>
+          <p class="p4">1 x 8 Reps @ 125 kg</p>
+        </div>
+        <div class="actuals-outcomes">
+          <p class="p4 actuals-status"><svg></svg></p>
+          <p class="p4">1</p><p class="p4">8</p><p class="p4">7</p>
+          <p class="p4">124.9 kg</p>
+          <p class="p4 mobile-hidden">68%</p>
+          <p class="p4 mobile-hidden">170.7 kg</p>
+          <p class="p4 video"></p>
+          <p class="p4 description mobile-hidden"
+             data-full-comment="{full}">1x10 @135lbs, Paused x4 1x8 @225lbs, Pa...</p>
+        </div>
+      </div>
+    </li>
+    </ul></body></html>
+    """
+    day = parse_day_detail_html(html, "2025-01-27")
+    assert day is not None
+    squat_set = day.exercises[0].actuals[0]
+    assert squat_set.comment == full
+    assert squat_set.comment is not None and not squat_set.comment.endswith("...")

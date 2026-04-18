@@ -219,7 +219,16 @@ def _extract_actual(container: Tag) -> ActualSet | None:
 
     comment: str | None = None
     if description_p is not None:
-        comment = description_p.get_text(strip=True) or None
+        # The scraper's comment-expansion step writes the full per-set comment
+        # into a data-full-comment attribute because MSB ships only a ~40-char
+        # preview in the server-rendered HTML. Prefer that when present; fall
+        # back to the visible text for older captures or comments short enough
+        # that MSB did not truncate.
+        full_attr = description_p.get("data-full-comment")
+        if isinstance(full_attr, str) and full_attr.strip():
+            comment = full_attr.strip()
+        else:
+            comment = description_p.get_text(strip=True) or None
 
     video_url: str | None = None
     if video_p is not None:

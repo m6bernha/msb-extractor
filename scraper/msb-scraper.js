@@ -45,10 +45,22 @@
     dayDelayMs: 300,
     retryBackoffMs: 800,
     retryCount: 2,
+    // Set to false to skip the comment-expansion pass. The pass renders each
+    // day with truncated comments inside a hidden iframe and clicks each
+    // preview to reveal the full text. It is slower (~2-6s per day with
+    // truncated comments) but without it, comments longer than ~40 chars are
+    // captured as the MSB-rendered preview and end in '...'.
+    expandComments: true,
+    expandTimeoutMs: 8000,
+    expandClickDelayMs: 150,
+    expandPostClickPollMs: 100,
+    expandPostClickMaxPolls: 30,
+    expandModalCloseDelayMs: 200,
     downloadFilename: 'msb_capture.json'
   };
 
   var CALENDAR_PATH = '/dashboard/calendar/';
+  var SCHEMA_VERSION = 2;
 
   // ------------------------------------------------------------------
   // Small helpers
@@ -152,6 +164,220 @@
     return null;
   }
 
+  // ------------------------------------------------------------------
+  // Full-comment expansion
+  // ------------------------------------------------------------------
+  //
+  // MSB ships only a ~40-character preview for each per-set comment in the
+  // server-rendered HTML (long comments are truncated to a prefix followed
+  // by a literal '...'). The full text is only fetched when the preview is
+  // clicked. To recover it we render the day in a hidden same-origin iframe,
+  // wait for React to hydrate, click each truncated preview, harvest the
+  // modal/popover's full text via a MutationObserver, then inject the full
+  // text back into the captured HTML as a data-full-comment attribute. The
+  // Python parser prefers that attribute over the visible preview.
+
+  // Does this day's HTML contain any server-truncated previews?
+  function hasTruncatedComments(html) {
+    // Cheap substring gate before walking the DOM.
+    return html.indexOf('cursor:pointer') !== -1 &&
+      html.indexOf('description') !== -1 &&
+      html.indexOf('...</p>') !== -1;
+  }
+
+  // Matches the scraper-side predicate: a description paragraph with
+  // cursor:pointer whose text content ends with '...'.
+  function isTruncatedDescription(p) {
+    if (!p || p.tagName !== 'P') { return false; }
+    var classes = p.className || '';
+    if (classes.indexOf('description') === -1) { return false; }
+    var style = p.getAttribute('style') || '';
+    if (style.indexOf('cursor:pointer') === -1 && style.indexOf('cursor: pointer') === -1) {
+      return false;
+    }
+    var text = (p.textContent || '').trim();
+    return text.length > 0 && text.slice(-3) === '...';
+  }
+
+  function collectTruncatedDescriptions(root) {
+    var out = [];
+    var all = root.querySelectorAll('p.description');
+    for (var i = 0; i < all.length; i++) {
+      if (isTruncatedDescription(all[i])) { out.push(all[i]); }
+    }
+    return out;
+  }
+
+  // Wait up to `timeoutMs` for `predicate()` to return truthy. Polls at
+  // `intervalMs`. Resolves with the predicate's return value.
+  async function waitFor(predicate, timeoutMs, intervalMs) {
+    intervalMs = intervalMs || 100;
+    var deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        var val = predicate();
+        if (val) { return val; }
+      } catch (_) { /* predicate throws before DOM ready — keep polling */ }
+      await sleep(intervalMs);
+    }
+    return null;
+  }
+
+  // After clicking a truncated preview, scan the iframe DOM for an element
+  // whose text starts with the preview's prefix (minus the trailing '...')
+  // but is longer than the preview and does not itself end in '...'. That is
+  // the expanded copy of the comment rendered into MSB's modal or popover.
+  function findExpansion(idoc, preview) {
+    var trimmed = preview.replace(/\.\.\.$/, '').trim();
+    // Use a generous prefix for matching: the first 20 chars are usually
+    // unique enough to avoid false positives without being so long that a
+    // slightly different whitespace rendering in the modal misses the match.
+    var prefixKey = trimmed.slice(0, Math.min(trimmed.length, 20));
+    if (!prefixKey) { return null; }
+
+    var candidates = idoc.querySelectorAll('body *');
+    for (var i = 0; i < candidates.length; i++) {
+      var el = candidates[i];
+      // Skip the preview element itself and elements with children that
+      // contain the text (we want the innermost text holder).
+      if (el.children.length > 0) { continue; }
+      var t = (el.textContent || '').trim();
+      if (!t || t.length <= trimmed.length) { continue; }
+      if (t.slice(-3) === '...') { continue; }
+      if (t.indexOf(prefixKey) !== 0) { continue; }
+      return t;
+    }
+    return null;
+  }
+
+  // Dispatch an Escape key to close whatever modal opened for the preview.
+  function dispatchEscape(idoc) {
+    try {
+      var ev = new KeyboardEvent('keydown', {
+        key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true
+      });
+      idoc.dispatchEvent(ev);
+      idoc.body.dispatchEvent(ev);
+    } catch (_) { /* best effort */ }
+  }
+
+  // Inject the collected full-comment strings back into the original captured
+  // HTML string by walking the same truncated-description elements in the
+  // order they appear. Uses DOMParser so no regex against HTML is needed.
+  function injectFullComments(dayHtml, fullComments) {
+    try {
+      var parser = new DOMParser();
+      var doc = parser.parseFromString(dayHtml, 'text/html');
+      var targets = collectTruncatedDescriptions(doc);
+      if (targets.length !== fullComments.length) {
+        console.log('[msb]   warning: expanded ' + fullComments.length +
+          ' comments but original HTML has ' + targets.length +
+          ' truncated previews; attribution may be off');
+      }
+      var n = Math.min(targets.length, fullComments.length);
+      var injected = 0;
+      for (var i = 0; i < n; i++) {
+        if (fullComments[i]) {
+          targets[i].setAttribute('data-full-comment', fullComments[i]);
+          injected++;
+        }
+      }
+      if (injected === 0) { return dayHtml; }
+      // Preserve doctype — DOMParser strips it from outerHTML.
+      return '<!DOCTYPE html>' + doc.documentElement.outerHTML;
+    } catch (err) {
+      console.log('[msb]   injection failed: ' + (err && err.message));
+      return dayHtml;
+    }
+  }
+
+  // Render the day URL inside an offscreen same-origin iframe, click each
+  // truncated preview, collect full text. Returns an array of full-comment
+  // strings (one per truncated preview, null where expansion failed).
+  async function harvestFullCommentsFromIframe(dayUrl) {
+    var iframe = document.createElement('iframe');
+    iframe.style.cssText =
+      'position:fixed;left:-10000px;top:0;width:1280px;height:1800px;' +
+      'border:0;pointer-events:none;opacity:0;';
+    iframe.setAttribute('aria-hidden', 'true');
+
+    var loaded = new Promise(function (resolve, reject) {
+      iframe.onload = function () { resolve(); };
+      iframe.onerror = function () { reject(new Error('iframe load error')); };
+    });
+
+    document.body.appendChild(iframe);
+    iframe.src = dayUrl;
+
+    try {
+      // Wait for initial load + hydration.
+      await Promise.race([
+        loaded,
+        sleep(CONFIG.expandTimeoutMs).then(function () {
+          throw new Error('iframe load timeout');
+        })
+      ]);
+      // Wait for React to render actuals containers.
+      var idoc = iframe.contentDocument;
+      if (!idoc) { throw new Error('no contentDocument (cross-origin?)'); }
+
+      var hydrated = await waitFor(function () {
+        return idoc.querySelectorAll('.actuals-outcomes-container').length > 0;
+      }, CONFIG.expandTimeoutMs, 200);
+      if (!hydrated) { throw new Error('hydration timeout'); }
+      // Extra settle time for click listeners to attach.
+      await sleep(400);
+
+      var targets = collectTruncatedDescriptions(idoc);
+      var results = [];
+      for (var i = 0; i < targets.length; i++) {
+        var p = targets[i];
+        var preview = (p.textContent || '').trim();
+        var full = null;
+        try {
+          p.click();
+        } catch (_) { /* some browsers balk at synthetic clicks on <p>; try dispatch */
+          try {
+            p.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+          } catch (__) {}
+        }
+        await sleep(CONFIG.expandClickDelayMs);
+        for (var attempt = 0; attempt < CONFIG.expandPostClickMaxPolls; attempt++) {
+          full = findExpansion(idoc, preview);
+          if (full) { break; }
+          await sleep(CONFIG.expandPostClickPollMs);
+        }
+        results.push(full);
+        dispatchEscape(idoc);
+        await sleep(CONFIG.expandModalCloseDelayMs);
+      }
+      return results;
+    } finally {
+      try { iframe.remove(); } catch (_) {}
+    }
+  }
+
+  async function expandCommentsForDay(date, month, dayHtml) {
+    if (!hasTruncatedComments(dayHtml)) { return dayHtml; }
+    var dayUrl = CALENDAR_PATH + '?month=' + month + '&view=day&date=' + date;
+    try {
+      var fulls = await harvestFullCommentsFromIframe(dayUrl);
+      var gotCount = 0;
+      for (var i = 0; i < fulls.length; i++) { if (fulls[i]) { gotCount++; } }
+      if (gotCount === 0) {
+        console.log('[msb]   ' + date + ': no full comments recovered');
+        return dayHtml;
+      }
+      console.log('[msb]   ' + date + ': expanded ' + gotCount +
+        ' of ' + fulls.length + ' truncated comments');
+      return injectFullComments(dayHtml, fulls);
+    } catch (err) {
+      console.log('[msb]   ' + date + ': expand failed (' +
+        (err && err.message) + '); keeping truncated previews');
+      return dayHtml;
+    }
+  }
+
   // Trigger a browser download of the given object as JSON. Returns true
   // on success, false if the browser refused the programmatic click.
   function triggerDownload(obj, filename) {
@@ -188,7 +414,7 @@
       CONFIG.dayDelayMs + 'ms retries=' + CONFIG.retryCount);
 
     var output = {
-      schemaVersion: 1,
+      schemaVersion: SCHEMA_VERSION,
       capturedAt: new Date().toISOString(),
       source: 'app.mystrengthbook.com',
       calendars: {},
@@ -205,6 +431,8 @@
     var totalDates = 0;
     var capturedDays = 0;
     var failedMonths = 0;
+    var daysWithTruncated = 0;
+    var daysExpanded = 0;
 
     for (var i = 0; i < months.length; i++) {
       var month = months[i];
@@ -231,6 +459,12 @@
         var date = dates[j];
         var html = await fetchDayWithRetries(date, month);
         if (html) {
+          if (CONFIG.expandComments && hasTruncatedComments(html)) {
+            daysWithTruncated++;
+            var expanded = await expandCommentsForDay(date, month, html);
+            if (expanded !== html) { daysExpanded++; }
+            html = expanded;
+          }
           output.days[date] = html;
           capturedDays++;
         }
@@ -243,6 +477,10 @@
     console.log('[msb] done: captured ' + capturedDays + ' of ' + totalDates +
       ' training days across ' + months.length + ' months (' +
       failedMonths + ' months failed)');
+    if (CONFIG.expandComments) {
+      console.log('[msb] comment expansion: enriched ' + daysExpanded +
+        ' of ' + daysWithTruncated + ' days with truncated previews');
+    }
 
     var ok = triggerDownload(output, CONFIG.downloadFilename);
     if (ok) {
