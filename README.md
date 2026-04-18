@@ -106,8 +106,13 @@ For every training day in your account the parser pulls out:
   load where the coach used a percentage
 - **Actual**: the reps you performed, the RPE you logged, the load you
   lifted, MSB's computed %1RM and estimated 1RM
-- **Your comments** on each set (the notes you typed into the "description"
-  box — "elbows slotted", "felt strong", "depresso 2am session")
+- **Your comments** on each set, in full (the notes you typed into the
+  "description" box — "elbows slotted", "felt strong", "depresso 2am
+  session"). MyStrengthBook only ships a ~40-character preview in the
+  page HTML, so the scraper clicks every truncated note in a hidden
+  iframe and recovers the full text before writing the capture file —
+  see [scraper/README.md](scraper/README.md#full-per-set-comments) for
+  the details.
 - Completion status per set (completed, partial, missed, prescribed only)
 - Video-attachment links when you uploaded a lift video
 

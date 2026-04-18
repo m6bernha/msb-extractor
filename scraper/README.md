@@ -14,7 +14,7 @@ One file, `msb_capture.json`, with this shape:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "capturedAt": "2026-04-17T18:00:00.000Z",
   "source": "app.mystrengthbook.com",
   "calendars": { "2024-05": "<html>", "2024-06": "<html>", ... },
@@ -25,6 +25,23 @@ One file, `msb_capture.json`, with this shape:
 Only dates that rendered an `actuals-outcomes` block (i.e. a real
 training session with logged sets) are saved. Rest days and empty pages
 are skipped.
+
+### Full per-set comments
+
+MyStrengthBook renders only a ~40-character preview of each per-set
+comment in the server HTML (long notes are cut to a prefix and end in a
+literal `...`). The full text is fetched lazily when the user clicks the
+preview.
+
+From `schemaVersion: 2` onwards the scraper recovers the full text by
+loading each affected day in a hidden same-origin iframe, clicking every
+truncated preview, harvesting the expanded copy from MSB's modal, and
+writing it back into the captured HTML as a `data-full-comment`
+attribute on the source `<p>`. The Python parser prefers that attribute,
+so you get the complete comment in the `Raw Log` and `Week …` sheets.
+
+Older v1 captures still parse, but any comment that MSB truncated will
+remain cut off — re-run the current scraper to recover them.
 
 ## Prerequisites
 
@@ -93,6 +110,12 @@ var CONFIG = {
   dayDelayMs: 300,         // pause between day fetches
   retryBackoffMs: 800,     // pause before each retry
   retryCount: 2,           // extra attempts per day (so 3 total)
+  expandComments: true,    // expand truncated per-set comments via iframe
+  expandTimeoutMs: 8000,   // iframe load / hydration deadline per day
+  expandClickDelayMs: 150, // settle before polling after each click
+  expandPostClickPollMs: 100,
+  expandPostClickMaxPolls: 30,
+  expandModalCloseDelayMs: 200,
   downloadFilename: 'msb_capture.json'
 };
 ```
@@ -101,13 +124,23 @@ Edit these values before pasting if you want a narrower date range or a
 different pace. The most common reason to change `startMonth` is to
 back-fill older data; the defaults only cover the last 24 months.
 
+Set `expandComments: false` to skip the comment-expansion pass. The
+scrape is faster but any comment MSB truncated stays cut off.
+
 ## Expected runtime
 
-Roughly **1.1 seconds per training day**, plus a little per month for
-the calendar pages and rate-limit pauses. If you train 4 days a week and
-are capturing 24 months, expect about 400 training days, or
-**about 7-8 minutes**. Leave the tab visible - some browsers throttle
-background timers.
+Roughly **1.1 seconds per training day** for the base fetch, plus an
+extra **2-6 seconds per day that has truncated comments** for the
+comment-expansion pass. If you train 4 days a week for 24 months and
+most of those days have at least one long comment, expect
+**about 20-25 minutes** end-to-end. Leave the tab visible - some
+browsers throttle background timers, and the hidden iframe needs the
+page to be foregrounded to hydrate reliably.
+
+If you do not care about recovering long comments and just want the
+fastest possible capture, set `expandComments: false` — the scrape then
+runs in **7-8 minutes** and every long comment is captured as the
+`...`-terminated preview MSB renders.
 
 ## Troubleshooting
 
@@ -154,6 +187,29 @@ an error from this script.
 You're on the wrong domain. The script must be pasted into a console
 whose page origin is `app.mystrengthbook.com`. Running it on any other
 site will fail because the cookies aren't sent.
+
+**Log line: `expand failed (hydration timeout)` on many days.**
+The iframe loaded but React did not finish hydrating before
+`expandTimeoutMs` elapsed. This is usually a foreground/throttling
+issue — keep the tab visible, close unrelated heavy tabs, and rerun.
+If it persists, bump `expandTimeoutMs` to `15000` and retry. The run
+still finishes either way; affected days just keep the `...`-terminated
+previews.
+
+**Log line: `no full comments recovered` for a day that has long notes.**
+MSB rendered the modal in a layout the matcher didn't recognise (most
+commonly because the full text is broken across multiple elements or
+the preview had unusual whitespace). File an issue with the day's HTML
+snippet — see [CONTRIBUTING.md](../CONTRIBUTING.md) — and in the
+meantime set `expandComments: false` to skip the pass entirely and fall
+back to MSB's preview text.
+
+**Comments in the xlsx still end in `...`.**
+Either you are parsing a v1 capture (`schemaVersion: 1`) that was
+produced before the fix, or the comment-expansion pass did not recover
+that specific entry. Regenerate the capture with the current script and
+check `[msb] comment expansion: enriched N of M days` in the console —
+N should be close to M.
 
 ## What this does NOT do
 

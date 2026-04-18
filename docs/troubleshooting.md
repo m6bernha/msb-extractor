@@ -69,8 +69,32 @@ prefix the call with `python -m` from the repo root.
 ### `pydantic.ValidationError` when loading the JSON
 
 The capture file is either corrupted or from an incompatible scraper
-version. Re-run the scraper — the latest version always writes
-`schemaVersion: 1` with `calendars` and `days` dicts.
+version. Re-run the scraper — the current version writes
+`schemaVersion: 2` with `calendars` and `days` dicts. The parser still
+accepts v1 captures but will not have the full per-set comments they
+pre-date (see "Comments end in `...`" below).
+
+### Comments in the xlsx end in `...`
+
+MyStrengthBook server-renders only a ~40-character preview of each
+per-set comment. From `schemaVersion: 2` onwards the scraper clicks
+each preview in a hidden iframe and recovers the full text, writing it
+into a `data-full-comment` attribute the parser prefers.
+
+If your comments are still truncated:
+
+1. Check the capture's `schemaVersion` — open `msb_capture.json` and
+   look at the first line; `1` means you're on a pre-fix capture. Re-run
+   the current scraper to regenerate.
+2. Confirm the scraper finished the expansion pass. Its last console
+   line should be `[msb] comment expansion: enriched N of M days`
+   with `N` close to `M`. If `N` is 0 or much smaller than `M`, the
+   iframe hydration timed out; see the scraper README's "expand failed"
+   troubleshooting entry.
+3. If a specific day's long comments never recovered, set
+   `expandComments: false` to get a clean (preview-only) capture, open
+   an issue with the day's HTML snippet, and we'll teach the matcher
+   about that modal layout.
 
 ### The xlsx has no "Week ..." sheets
 
