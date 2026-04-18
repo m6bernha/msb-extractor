@@ -129,18 +129,31 @@ scrape is faster but any comment MSB truncated stays cut off.
 
 ## Expected runtime
 
-Roughly **1.1 seconds per training day** for the base fetch, plus an
-extra **2-6 seconds per day that has truncated comments** for the
-comment-expansion pass. If you train 4 days a week for 24 months and
-most of those days have at least one long comment, expect
-**about 20-25 minutes** end-to-end. Leave the tab visible - some
-browsers throttle background timers, and the hidden iframe needs the
-page to be foregrounded to hydrate reliably.
+Plan for this being slow. The base fetch is cheap but the comment
+expansion dominates the wall-clock for anyone who logs long notes.
+
+- **~1.1 seconds per training day** for the plain HTML fetch.
+- **~30-80 seconds per training day that has truncated comments**, on
+  top of the fetch. The hidden iframe loads MSB's full app bundle,
+  waits for React to hydrate, clicks each preview serially, polls for
+  the modal, then closes it — for every truncated comment on the day.
+
+If you train ~20 days/month, 24 months, and most sessions have at
+least one long comment, expect **2-4 hours end-to-end**. Light users
+with short comments can finish in **15-30 minutes**. Leave the tab
+visible and foregrounded — some browsers throttle background timers,
+and the hidden iframe needs the page foregrounded to hydrate
+reliably.
+
+From the outside the run often *looks* wedged mid-day: the script
+only logs terminal-state lines (like `expanded 5 of 5`) so a day with
+six comments and several modal-waits can stay silent for ~60 seconds
+at a time. This is normal. The script is working.
 
 If you do not care about recovering long comments and just want the
-fastest possible capture, set `expandComments: false` — the scrape then
-runs in **7-8 minutes** and every long comment is captured as the
-`...`-terminated preview MSB renders.
+fastest possible capture, set `expandComments: false` — the scrape
+then runs in **7-8 minutes** and every long comment is captured as
+the `...`-terminated preview MSB renders.
 
 ## Troubleshooting
 

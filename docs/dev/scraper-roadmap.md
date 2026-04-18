@@ -3,6 +3,13 @@
 Context for the next person (or AI agent) picking up the browser-side
 capture script at [scraper/msb-scraper.js](../../scraper/msb-scraper.js).
 
+> **Status, 2026-04-18**: a Claude Chrome PM session captured a richer
+> prioritised list than the one below while running a live 3-4 hour
+> capture against a real MSB account. Their list is the authoritative
+> one; it is reproduced verbatim in the "Full 15-item improvement list"
+> section near the bottom. The priorities below summarise it; the full
+> list is the working spec.
+
 ## What works today (schemaVersion 2)
 
 - Fetch-based capture of every MSB monthly calendar page and every
@@ -145,29 +152,143 @@ If Claude Code Desktop (or a human PM) is iterating on this:
   evening. Prefer a visible banner + non-zero exit flag over a
   console.log no one reads.
 
-## Post-mortem: Claude Chrome hang (2026-04-18)
+## Post-mortem: Claude Chrome "hang" (2026-04-18)
 
 Symptom: user pasted a prompt into Claude Chrome pointing at the live
 repo's `raw.githubusercontent.com/.../msb-scraper.js` URL. Claude Chrome
-appeared to run the fetch+eval, then hung for tens of minutes without
-progress.
+appeared to hang for 5+ minutes; user closed the tab and retried.
 
-Suspect causes, most to least likely:
+**Revised root cause** (after the in-session Claude Chrome PM reported
+live state):
 
-1. **Completion signal mismatch.** `(0, eval)(src)` resolves
-   immediately; the real work runs in background. Claude Chrome had
-   no deterministic way to know when to stop watching, so it kept
-   polling a session that was already in progress and ran out of
-   context. Fix: expose `window._msbPromise` (P0).
-2. **Iframe observer interference.** 150+ iframes mounting and
-   unmounting the full SPA confused the agent's tab observer. Fix:
-   run expansion in a dedicated detached render surface (web component
-   or shadow DOM) rather than top-level iframes (P1+).
-3. **MSB CSP blocked `raw.githubusercontent.com`.** Should have shown
-   a CORS/CSP error in DevTools Network, but Claude Chrome may not
-   have surfaced it. Fix: ship the scraper bundled into the
-   bookmarklet so no runtime cross-origin fetch is needed (P3).
+The scraper was **never hung**. It was working through the scrape at
+the real pace of ~30-80 seconds per training day for days with
+truncated comments. For a 24-month heavy-user account (~300 such
+days), the true runtime is **~3-4 hours**, not the 15-25 minutes the
+header comment and documentation previously claimed.
 
-Regardless of which of these was dominant, **P0 alone would have
-turned the hang into a clean report**: either "fetch failed, here is
-the CSP error" or "capture is 17% done, 12 minutes remaining."
+The user-facing perception of "hung" came from a combination of:
+
+1. **Claude Chrome UX loop.** The agent's UI cycles through "wait for
+   tooling → run JS script → wait for tooling" with 10-second polling
+   gaps and no diff between polls, so the human reads it as no
+   progress. This is a Chrome agent UX concern, but the scraper makes
+   it worse because nothing in the tab changes between polls except
+   occasional console lines.
+2. **No progress heartbeat.** The script logs a terminal-state line
+   only when a whole day's expansion finishes. A heavy day with six
+   long comments + modal waits is silent for ~60 seconds from the
+   outside.
+3. **No pollable progress object.** `window._msbRunning` is a boolean;
+   there is no current-date, month-index, or `lastEventAt` field an
+   external poller can read to distinguish "working" from "wedged".
+4. **Wildly optimistic time estimate in the docs.** "15-25 minutes"
+   was the right number for a light user but off by an order of
+   magnitude for a heavy user. A user seeing an hour of console
+   silence when they were told to expect 25 minutes total reasonably
+   concludes something broke.
+
+**None of the original suspect causes (CSP blocking, iframe observer
+interference, stuck `_msbRunning` flag) were the actual story on this
+run.** The live session reported solid session cookies, no 401/403
+storm, and successful per-day expansion. Keep those hypotheses in mind
+for future investigations, but the dominant failure mode here was
+**no external observability**, not a functional bug.
+
+**The P0 starter patch below turns this class of hang into a clean
+report.** With `window._msbProgress` updated each step and a 15-second
+heartbeat, Claude Chrome (or any external poller) can distinguish
+"working heavy day with six modals" from "wedged" and report that to
+the human in real time.
+
+## Full 15-item improvement list (Claude Chrome PM session, 2026-04-18)
+
+Reproduced verbatim below. Items 1, 4, 7, 8, 10 are the recommended
+first patch — low-risk small diffs that unlock external observability.
+
+1. **Expose a live progress object.** Replace the boolean
+   `_msbRunning` with an object like `window._msbProgress = { phase,
+   currentMonth, monthIdx, totalMonths, currentDate, dayIdx,
+   daysInMonth, capturedDays, expandedDays, failedDays, lastEventAt,
+   lastMessage }`. Update it at every step. This single change lets
+   any external poller (Claude, a CLI wrapper, a devtools snippet)
+   tell "working" from "wedged" without parsing console text. Keep
+   the boolean for backward compatibility.
+2. **Parallelize day fetches (bounded).** The per-day HTML fetch is
+   I/O-bound and idempotent. Add a config `dayConcurrency`
+   (default 3-4) with a small Promise pool. Keep comment expansion
+   serial per day (iframes are shared DOM state) but allow multiple
+   days' plain HTML fetches to happen in parallel, then run expansion
+   sequentially on the subset that actually has truncated previews.
+   This alone likely halves wall time.
+3. **Parallelize comment expansion with an iframe pool.** Currently
+   one hidden iframe is used at a time. Maintain a pool of 2-3 hidden
+   iframes keyed by URL; cycle through them. Many comments don't
+   actually need a full navigation — once the iframe is hydrated you
+   can navigate it via `history.pushState` or reuse across same-month
+   days to skip cold starts. Biggest risk: MSB's client code sharing
+   state across iframes; needs testing.
+4. **Calendar-level retries.** `fetchDayWithRetries` has retries; the
+   calendar fetch does not. Wrap `fetchText(CALENDAR_PATH + ...)` in
+   the same backoff loop. The 2025-01 500 in today's run shows this
+   happens in the wild.
+5. **Faster expansion defaults.** `expandTimeoutMs: 8000` triggers on
+   any slow hydrate; `expandPostClickMaxPolls: 30 × 100ms = 3s` is
+   generous. Add adaptive timing: measure the first successful day's
+   hydrate time and scale the rest down to
+   `max(observed * 1.5, 2000ms)`. Also cache the hydrated iframe
+   between consecutive days of the same month.
+6. **Resume / checkpoint.** Periodically (every N days) stash output
+   into `localStorage` under a versioned key. On re-entry detect it
+   and offer to resume. A 3-hour run that loses power today has to
+   start over. As a bonus, allow running the scraper chunked:
+   `startMonth`/`endMonth` already exists — add a `mergeWith` option
+   that loads a previously-downloaded JSON and only captures missing
+   months/days.
+7. **Structured log events.** Replace ad-hoc
+   `console.log('[msb] ...')` strings with a
+   `logEvent({type, date, month, ...})` helper that prints human text
+   and pushes onto `window._msbEvents = []`. External tooling
+   (including Claude) can then poll `_msbEvents.slice(lastSeen)`
+   instead of scraping console text.
+8. **Heartbeat.** A
+   `setInterval(() => log('[msb] heartbeat ' + JSON.stringify(progressSnapshot)), 15000)`
+   while running prevents the "has it died?" question and makes
+   tab-throttling visible immediately (if two heartbeats are >30s
+   apart when configured to 15s, the tab is being throttled).
+9. **Surface and bucket expansion failures.** Track
+   `{timeout: n, hydration: n, noFullRecovered: n}` in progress.
+   Right now the terminal summary says "enriched P of Q" but not why
+   the rest failed. That directly informs whether `expandTimeoutMs`
+   needs to go up or whether the DOM selector needs a refresh.
+10. **Abort handle.**
+    `window._msbAbort = () => { aborted = true; }` checked at each
+    `await sleep`. Lets a user gracefully stop a run and still get a
+    partial JSON (right now they have to close the tab, which loses
+    the download).
+11. **Data integrity.** Add `capturedAtMs`, schema check in consumer,
+    and a top-level `stats` object mirroring the final summary so the
+    Python side can verify counts without re-parsing HTML.
+12. **Documentation realism.** Update the header comment's time
+    estimate. "15-25 minutes" should be "15 minutes for light users;
+    several hours for heavy users with many long comments per
+    session. Expect ~30-60s per training day that has truncated
+    comments." Mention the comment-expansion cost up front so people
+    don't assume it's hung.
+13. **Optional: skip expansion for old data.** An
+    `expandCommentsSince: 'YYYY-MM'` knob would let users re-run
+    nightly for recent months only and accept truncated previews for
+    years-old data, cutting total time dramatically on incremental
+    runs.
+14. **Robustness of `findExpansion`.** The 20-char prefix match +
+    "ends not in ..." + "longer than preview" heuristic is brittle if
+    MSB ever renders the modal with surrounding padding text. Prefer
+    a DOM selector based on the modal container class (inspect the
+    real modal once and target it), with the heuristic as fallback.
+    Also consider a `MutationObserver` on the iframe body instead of
+    polling — faster and more reliable.
+15. **Security/CSP note.** The `(0, eval)(src)` loader works today but
+    will break the moment MSB ships a strict CSP. Offer a same-origin
+    hosting fallback (e.g. distribute a bookmarklet or a
+    Chrome-extension variant) alongside the `raw.githubusercontent`
+    fetch.
