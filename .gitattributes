@@ -1,0 +1,23 @@
+# Keep files LF in the repo; check out with each platform's default.
+* text=auto eol=lf
+
+# Binary formats: don't diff, don't line-end-normalize.
+*.xlsx binary
+*.xlsm binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+
+# Language hints for Git diff output.
+*.py text diff=python
+*.js text
+*.html text
+*.md text
+*.yaml text
+*.yml text
+*.toml text
+*.json text

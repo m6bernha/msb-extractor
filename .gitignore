@@ -53,9 +53,11 @@ desktop.ini
 msb_day_details*.json
 msb_calendar_html*.json
 msb_capture*.json
+!docs/examples/demo_*.json
 captures/
 out/
 *.local.json
 
 # Commercial reference spreadsheets live locally only, never in the public repo.
-examples/
+# Anchored to the repo root so docs/examples/ (our own demo) stays tracked.
+/examples/
