@@ -14,8 +14,9 @@ One file, `msb_capture.json`, with this shape:
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "capturedAt": "2026-04-17T18:00:00.000Z",
+  "capturedAtMs": 1744848000000,
   "source": "app.mystrengthbook.com",
   "calendars": { "2024-05": "<html>", "2024-06": "<html>", ... },
   "days":      { "2024-05-03": "<html>", "2024-05-06": "<html>", ... }
@@ -33,15 +34,52 @@ comment in the server HTML (long notes are cut to a prefix and end in a
 literal `...`). The full text is fetched lazily when the user clicks the
 preview.
 
-From `schemaVersion: 2` onwards the scraper recovers the full text by
-loading each affected day in a hidden same-origin iframe, clicking every
-truncated preview, harvesting the expanded copy from MSB's modal, and
-writing it back into the captured HTML as a `data-full-comment`
-attribute on the source `<p>`. The Python parser prefers that attribute,
-so you get the complete comment in the `Raw Log` and `Week …` sheets.
+v3 recovers the full text with a **two-strategy** expansion pass.
 
-Older v1 captures still parse, but any comment that MSB truncated will
-remain cut off — re-run the current scraper to recover them.
+1. **Endpoint probe (fast path).** The scraper extracts an
+   `(exerciseId, setIndex)` pair from a captured day's HTML and
+   probes a short list of candidate `/actions/refresh?modal[type]=…`
+   URLs (`exercise-set-description`, `set-comment`, etc.). If any
+   candidate returns the full comment text, every subsequent
+   expansion is a single ~150 ms fetch. A full 24-month capture with
+   ~1500 comments finishes in about **2-4 minutes**.
+2. **Iframe pool (fallback).** If the probe fails MSB's comment modal
+   is rendered entirely client-side, so v3 falls back to v2's approach
+   — a pool of hidden same-origin iframes (default concurrency 2) that
+   load each eligible day, click each truncated preview, and harvest
+   the modal text. Slower (~30-60 min for a heavy account) but still
+   parallelised.
+
+In both strategies, the full text is written back into the captured
+HTML as a `data-full-comment` attribute on the source `<p>`. The
+Python parser prefers that attribute, so you get the complete comment
+in the `Raw Log` and `Week …` sheets.
+
+Older v1 and v2 captures still parse, but any comment that MSB
+truncated will remain cut off — re-run the current scraper to recover
+them.
+
+### Observability
+
+v3 publishes live progress on the page's window object so external
+tooling (browser-automation agents, devtools snippets) can distinguish
+"working" from "wedged" without scraping console text.
+
+- `window._msbProgress` — structured object with `phase`,
+  `calendars`, `days`, `expansion`, `elapsedMs`, `etaMs`, `aborted`,
+  `fatal`, and the current in-flight `month` / `date`.
+- `window._msbEvents` — rolling array of every log event, each with
+  `t` (timestamp) and `type`.
+- `window._msbAbort()` — graceful stop; the scraper finishes the
+  current item, writes a `msb_capture_partial.json`, then exits.
+- `window.addEventListener('msb:progress', e => …)` — event-driven
+  hook fired on every state change.
+- A floating widget in the top-right of the MSB tab shows phase,
+  counters, elapsed time, ETA, and an Abort button. Disable with
+  `CONFIG.showWidget = false`.
+
+A 15-second heartbeat writes a progress snapshot so a silent tab
+becomes visible immediately.
 
 ## Prerequisites
 
@@ -104,56 +142,71 @@ The top of `msb-scraper.js` has a `CONFIG` object:
 
 ```js
 var CONFIG = {
-  startMonth: null,        // 'YYYY-MM' or null for 24 months ago
-  endMonth: null,          // 'YYYY-MM' or null for current month
-  monthDelayMs: 200,       // pause between month fetches
-  dayDelayMs: 300,         // pause between day fetches
-  retryBackoffMs: 800,     // pause before each retry
-  retryCount: 2,           // extra attempts per day (so 3 total)
-  expandComments: true,    // expand truncated per-set comments via iframe
-  expandTimeoutMs: 8000,   // iframe load / hydration deadline per day
-  expandClickDelayMs: 150, // settle before polling after each click
-  expandPostClickPollMs: 100,
-  expandPostClickMaxPolls: 30,
-  expandModalCloseDelayMs: 200,
-  downloadFilename: 'msb_capture.json'
+  // Date range.
+  startMonth: null, endMonth: null,
+
+  // Network concurrency and pacing. All fetches use the user's
+  // existing MSB session cookies.
+  monthConcurrency: 3, dayConcurrency: 3,
+  monthDelayMs: 50, dayDelayMs: 80,
+  retryCount: 2, retryBackoffMs: 800,
+
+  // Comment expansion.
+  expandComments: true,
+  probeComments: true,
+  probeCommentCandidates: [
+    'exercise-set-description', 'exercise-set-comment',
+    'exercise-set-note', 'edit-set-description',
+    'set-description', 'set-comment', 'set-note'
+  ],
+  probeConcurrency: 5, probeTimeoutMs: 5000,
+
+  // Iframe fallback (only used if the probe fails).
+  expandConcurrency: 2, expandTimeoutMs: 8000,
+  expandClickDelayMs: 80, expandPostClickPollMs: 60,
+  expandPostClickMaxPolls: 40, expandModalCloseDelayMs: 60,
+  iframeHydrationPollMs: 150,
+
+  heartbeatMs: 15000, showWidget: true,
+  downloadFilename: 'msb_capture.json',
+  partialFilename: 'msb_capture_partial.json'
 };
 ```
 
-Edit these values before pasting if you want a narrower date range or a
-different pace. The most common reason to change `startMonth` is to
-back-fill older data; the defaults only cover the last 24 months.
+Edit these values before pasting if you want a narrower date range, a
+different pace, or to disable the widget. The most common reason to
+change `startMonth` is to back-fill older data; the defaults only
+cover the last 24 months.
 
 Set `expandComments: false` to skip the comment-expansion pass. The
 scrape is faster but any comment MSB truncated stays cut off.
 
+Set `probeComments: false` to force the iframe fallback path even
+when the endpoint probe would have worked. Useful for debugging.
+
 ## Expected runtime
 
-Plan for this being slow. The base fetch is cheap but the comment
-expansion dominates the wall-clock for anyone who logs long notes.
+v3 runtime depends entirely on which expansion strategy wins.
 
-- **~1.1 seconds per training day** for the plain HTML fetch.
-- **~30-80 seconds per training day that has truncated comments**, on
-  top of the fetch. The hidden iframe loads MSB's full app bundle,
-  waits for React to hydrate, clicks each preview serially, polls for
-  the modal, then closes it — for every truncated comment on the day.
+- **Endpoint probe hits** (the expected fast path):
+  **~2-4 minutes** for a 24-month heavy-user capture. Dominated by
+  parallel HTML fetches; comments become tiny targeted GETs.
+- **Endpoint probe misses, iframe fallback kicks in**:
+  **~30-60 minutes** for the same capture. Still significantly
+  faster than v2 because iframes run in a concurrency-2 pool instead
+  of strictly serial.
+- **Expansion disabled** (`expandComments: false`):
+  **~1-2 minutes**. Long comments stay as MSB's `...` preview.
 
-If you train ~20 days/month, 24 months, and most sessions have at
-least one long comment, expect **2-4 hours end-to-end**. Light users
-with short comments can finish in **15-30 minutes**. Leave the tab
-visible and foregrounded — some browsers throttle background timers,
-and the hidden iframe needs the page foregrounded to hydrate
-reliably.
+The widget in the top-right of the tab shows an ETA once the first
+~10 % of work is done, so you can set the tab aside and come back
+when it says `done`. Leave the tab foregrounded — background tabs
+get timer-throttled, and the iframe fallback needs the page
+foregrounded to hydrate reliably.
 
-From the outside the run often *looks* wedged mid-day: the script
-only logs terminal-state lines (like `expanded 5 of 5`) so a day with
-six comments and several modal-waits can stay silent for ~60 seconds
-at a time. This is normal. The script is working.
-
-If you do not care about recovering long comments and just want the
-fastest possible capture, set `expandComments: false` — the scrape
-then runs in **7-8 minutes** and every long comment is captured as
-the `...`-terminated preview MSB renders.
+Check the final console summary (or `window._msbProgress`) for
+which strategy ran: `progress.expansion.strategy` will be
+`"endpoint"` (probe won) or `"iframe"` (fallback was used).
 
 ## Troubleshooting
 

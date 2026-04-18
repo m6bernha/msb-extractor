@@ -3,12 +3,64 @@
 Context for the next person (or AI agent) picking up the browser-side
 capture script at [scraper/msb-scraper.js](../../scraper/msb-scraper.js).
 
-> **Status, 2026-04-18**: a Claude Chrome PM session captured a richer
-> prioritised list than the one below while running a live 3-4 hour
-> capture against a real MSB account. Their list is the authoritative
-> one; it is reproduced verbatim in the "Full 15-item improvement list"
-> section near the bottom. The priorities below summarise it; the full
-> list is the working spec.
+> **Status, 2026-04-18 (v3 shipped)**: after a 3-hour v2 run confirmed
+> the iframe-per-day approach was not portfolio-grade, v3 was
+> rewritten to parallelise everything and to try a direct
+> `/actions/refresh?modal[type]=…` endpoint probe before falling back
+> to the iframe pool. Target runtime dropped from hours to **2-4
+> minutes** on the fast path (probe hits), **30-60 minutes** on the
+> slow path (probe misses, iframe pool runs).
+>
+> The following items from the Chrome PM session's 15-item list landed
+> in v3: **1, 2, 4, 7, 8, 9, 10, 11, 12** and a lightweight version of
+> **14** (textarea/innermost-text extractor for the modal response).
+> Remaining items are tracked below.
+
+## What shipped in v3
+
+- Parallel calendar fetches (`monthConcurrency: 3`).
+- Parallel day-detail fetches (`dayConcurrency: 3`) with per-day retry.
+- Calendar-level retries (`retryCount: 2`, backoff 800 ms).
+- Endpoint probe: try 7 candidate modal-types against a known
+  `(exerciseId, setIndex)` from the captured HTML. If one works,
+  every comment expansion becomes a single ~150 ms fetch.
+- Iframe fallback pool (`expandConcurrency: 2`) with adaptive
+  timing on hydration polls.
+- Live progress state on `window._msbProgress` (phase, counters,
+  elapsed, ETA, failure buckets).
+- Rolling event log on `window._msbEvents`.
+- Heartbeat every 15 s (makes tab throttling visible).
+- Graceful abort via `window._msbAbort()` — writes
+  `msb_capture_partial.json`.
+- Preflight session check; fails loudly if not logged in.
+- Floating widget in the top-right of the MSB tab with Abort button.
+- `msb:progress` CustomEvent for event-driven external tooling.
+- Schema bumped to `schemaVersion: 3`; Python parser stays
+  backward-compatible via `extra="ignore"` on the Capture model.
+
+## Still open (carry forward)
+
+From the Chrome PM list:
+
+- **#3. Parallelise comment expansion with a longer-lived iframe pool
+  via `history.pushState`.** v3 ships a pool but each iframe still
+  does a fresh navigation per day. If MSB's React router honours
+  pushState, one hydrated iframe could serve every day in a month
+  at near-zero hydration cost.
+- **#5. Adaptive expansion timing.** v3 uses fixed poll intervals.
+  Measure the first successful day's hydrate/modal-open time and
+  scale the rest down to `max(observed * 1.5, 500 ms)`.
+- **#6. Resume / checkpoint via localStorage.** Persist partial
+  output every N days so a 3-minute fast-path re-run can skip days
+  already captured. Especially useful for filling in months that
+  MSB returned 502/503 on.
+- **#13. Per-month expansion scope.** A `expandCommentsSince:
+  'YYYY-MM'` knob for incremental nightly runs.
+- **#14 full.** Replace the text-content heuristic with a proper DOM
+  selector once we know MSB's modal container class.
+- **#15. CSP-safe distribution.** Bundle the scraper into a
+  pre-encoded bookmarklet so no runtime fetch to
+  `raw.githubusercontent.com` is needed.
 
 ## What works today (schemaVersion 2)
 
