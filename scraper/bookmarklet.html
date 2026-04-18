@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MSB Extractor - bookmarklet installer</title>
+<style>
+  :root {
+    color-scheme: dark light;
+    --bg: #0f1115;
+    --panel: #171a21;
+    --border: #2a2f3a;
+    --fg: #e6e8ec;
+    --muted: #9aa3b2;
+    --accent: #4ea1ff;
+    --accent-fg: #0b0d12;
+    --code-bg: #0b0d12;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f7f8fa;
+      --panel: #ffffff;
+      --border: #e2e5ea;
+      --fg: #1a1d22;
+      --muted: #5a6270;
+      --accent: #1f6feb;
+      --accent-fg: #ffffff;
+      --code-bg: #f0f2f5;
+    }
+  }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  }
+  main {
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 32px 24px 80px;
+  }
+  h1 {
+    font-size: 22px;
+    margin: 0 0 8px;
+  }
+  p.lede {
+    margin: 0 0 24px;
+    color: var(--muted);
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    margin: 16px 0;
+  }
+  h2 {
+    font-size: 15px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    margin: 0 0 12px;
+    font-weight: 600;
+  }
+  ol {
+    margin: 0;
+    padding-left: 20px;
+  }
+  ol li {
+    margin: 4px 0;
+  }
+  .drag-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-top: 8px;
+  }
+  .bookmarklet {
+    display: inline-block;
+    padding: 10px 16px;
+    background: var(--accent);
+    color: var(--accent-fg);
+    text-decoration: none;
+    border-radius: 6px;
+    font-weight: 600;
+    cursor: grab;
+    user-select: none;
+  }
+  .bookmarklet:active {
+    cursor: grabbing;
+  }
+  .drag-hint {
+    color: var(--muted);
+    font-size: 13px;
+  }
+  textarea {
+    width: 100%;
+    min-height: 360px;
+    background: var(--code-bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+    font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    resize: vertical;
+    box-sizing: border-box;
+  }
+  code {
+    background: var(--code-bg);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 13px;
+  }
+  .status {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 8px;
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>MSB Extractor bookmarklet</h1>
+  <p class="lede">
+    Installs a one-click capture button that scrapes your logged-in
+    MyStrengthBook session and downloads a JSON file you can feed into the
+    <code>msb-extractor</code> Python CLI.
+  </p>
+
+  <section class="panel">
+    <h2>Install</h2>
+    <ol>
+      <li>Show your browser's bookmarks bar if it's hidden.</li>
+      <li>Drag the blue button below onto the bookmarks bar.</li>
+      <li>Open <code>app.mystrengthbook.com</code> and sign in.</li>
+      <li>Click the bookmark. Watch the console for progress; a file named
+        <code>msb_capture.json</code> will download when it's done.</li>
+    </ol>
+    <div class="drag-row">
+      <a id="bm" class="bookmarklet" href="javascript:void(0)" draggable="true">MSB Extractor</a>
+      <span class="drag-hint">Drag me to your bookmarks bar.</span>
+    </div>
+    <div class="status" id="status">Preparing bookmarklet...</div>
+  </section>
+
+  <section class="panel">
+    <h2>Script source (reference)</h2>
+    <p class="drag-hint" style="margin: 0 0 10px">
+      The same script the bookmarklet runs. You can also paste this straight
+      into the browser console.
+    </p>
+    <textarea id="src" readonly spellcheck="false"></textarea>
+  </section>
+</main>
+
+<!-- Raw script source. Parsed as plain text because of the non-executable
+     type attribute, so no HTML escaping is needed. -->
+<script type="text/plain" id="script-source">/*
+ * msb-scraper.js
+ *
+ * Browser-side capture script for app.mystrengthbook.com.
+ *
+ * MyStrengthBook does not offer a data export. This script reads the same
+ * HTML pages the logged-in user's browser can already see, collects the
+ * monthly calendar pages and each training day's detail page, bundles them
+ * into a single JSON blob, and triggers a download.
+ *
+ * Usage: open app.mystrengthbook.com while logged in, open DevTools console,
+ * paste this file, press Enter. A file named msb_capture.json will download
+ * once the run completes. The captured data is also kept on window._msbData
+ * and can be re-downloaded via window._msbDownload() if the browser blocks
+ * the automatic save.
+ *
+ * The companion Python CLI (msb-extractor) consumes the downloaded JSON.
+ */
+
+(function () {
+  'use strict';
+
+  // Idempotency guard: if the script gets evaluated twice in the same tab
+  // (for example via an injection wrapper that re-evaluates the IIFE), a
+  // second self-invocation would race the first against the server and
+  // double the request load. Short-circuit on the second call.
+  if (window._msbRunning) {
+    console.log('[msb] already running in this tab; ignoring this invocation.');
+    return;
+  }
+  window._msbRunning = true;
+
+  // ------------------------------------------------------------------
+  // Config
+  // ------------------------------------------------------------------
+  //
+  // startMonth / endMonth accept 'YYYY-MM'. Leave null to use the defaults
+  // (24 months ago through the current month, inclusive). All delays are
+  // milliseconds. retryCount is the number of *additional* attempts after
+  // the first try for each training day.
+  var CONFIG = {
+    startMonth: null,
+    endMonth: null,
+    monthDelayMs: 200,
+    dayDelayMs: 300,
+    retryBackoffMs: 800,
+    retryCount: 2,
+    downloadFilename: 'msb_capture.json'
+  };
+
+  var CALENDAR_PATH = '/dashboard/calendar/';
+
+  // ------------------------------------------------------------------
+  // Small helpers
+  // ------------------------------------------------------------------
+
+  function sleep(ms) {
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
+  }
+
+  function pad2(n) {
+    return (n < 10 ? '0' : '') + n;
+  }
+
+  function toMonthKey(date) {
+    return date.getFullYear() + '-' + pad2(date.getMonth() + 1);
+  }
+
+  // Add `delta` months to a 'YYYY-MM' key and return the new key.
+  function addMonths(monthKey, delta) {
+    var parts = monthKey.split('-');
+    var y = parseInt(parts[0], 10);
+    var m = parseInt(parts[1], 10);
+    var d = new Date(y, m - 1 + delta, 1);
+    return toMonthKey(d);
+  }
+
+  // Inclusive range of month keys from `start` through `end`.
+  function monthRange(start, end) {
+    var out = [];
+    var cur = start;
+    if (cur > end) { return out; }
+    while (cur <= end) {
+      out.push(cur);
+      cur = addMonths(cur, 1);
+    }
+    return out;
+  }
+
+  function resolveRange() {
+    var currentMonth = toMonthKey(new Date());
+    var defaultStart = addMonths(currentMonth, -24);
+    return {
+      start: CONFIG.startMonth || defaultStart,
+      end: CONFIG.endMonth || currentMonth
+    };
+  }
+
+  async function fetchText(url) {
+    var res = await fetch(url, { credentials: 'include' });
+    if (!res.ok) {
+      throw new Error('HTTP ' + res.status + ' for ' + url);
+    }
+    return await res.text();
+  }
+
+  function extractDates(calendarHtml) {
+    var pattern = /id="select-(\d{4}-\d{2}-\d{2})"[\s\S]*?exercises-frame/g;
+    var seen = {};
+    var dates = [];
+    var match;
+    while ((match = pattern.exec(calendarHtml)) !== null) {
+      var d = match[1];
+      if (!seen[d]) {
+        seen[d] = true;
+        dates.push(d);
+      }
+    }
+    dates.sort();
+    return dates;
+  }
+
+  async function fetchDayWithRetries(date, month) {
+    var url = CALENDAR_PATH + '?month=' + month + '&view=day&date=' + date;
+    var lastErr = null;
+
+    for (var attempt = 0; attempt <= CONFIG.retryCount; attempt++) {
+      try {
+        var html = await fetchText(url);
+        if (html.indexOf('actuals-outcomes') !== -1) {
+          return html;
+        }
+        lastErr = new Error('missing actuals-outcomes marker');
+      } catch (err) {
+        lastErr = err;
+      }
+      if (attempt < CONFIG.retryCount) {
+        await sleep(CONFIG.retryBackoffMs);
+      }
+    }
+
+    console.log('[msb] skip ' + date + ' - ' + (lastErr && lastErr.message));
+    return null;
+  }
+
+  function triggerDownload(obj, filename) {
+    try {
+      var json = JSON.stringify(obj);
+      var blob = new Blob([json], { type: 'application/json' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
+      return true;
+    } catch (err) {
+      console.log('[msb] download failed: ' + (err && err.message));
+      return false;
+    }
+  }
+
+  async function run() {
+    var range = resolveRange();
+    var months = monthRange(range.start, range.end);
+
+    console.log('[msb] starting capture ' + range.start + ' -> ' + range.end +
+      ' (' + months.length + ' months)');
+    console.log('[msb] delays: month=' + CONFIG.monthDelayMs + 'ms day=' +
+      CONFIG.dayDelayMs + 'ms retries=' + CONFIG.retryCount);
+
+    var output = {
+      schemaVersion: 1,
+      capturedAt: new Date().toISOString(),
+      source: 'app.mystrengthbook.com',
+      calendars: {},
+      days: {}
+    };
+
+    window._msbData = output;
+    window._msbDownload = function () {
+      return triggerDownload(output, CONFIG.downloadFilename);
+    };
+
+    var totalDates = 0;
+    var capturedDays = 0;
+    var failedMonths = 0;
+
+    for (var i = 0; i < months.length; i++) {
+      var month = months[i];
+      console.log('[msb] month ' + month + ' (' + (i + 1) + '/' + months.length + ')');
+
+      var calendarHtml;
+      try {
+        calendarHtml = await fetchText(CALENDAR_PATH + '?month=' + month);
+      } catch (err) {
+        console.log('[msb]   calendar fetch failed: ' + err.message);
+        failedMonths++;
+        await sleep(CONFIG.monthDelayMs);
+        continue;
+      }
+
+      output.calendars[month] = calendarHtml;
+
+      var dates = extractDates(calendarHtml);
+      totalDates += dates.length;
+      console.log('[msb]   found ' + dates.length + ' training dates');
+
+      for (var j = 0; j < dates.length; j++) {
+        var date = dates[j];
+        var html = await fetchDayWithRetries(date, month);
+        if (html) {
+          output.days[date] = html;
+          capturedDays++;
+        }
+        await sleep(CONFIG.dayDelayMs);
+      }
+
+      await sleep(CONFIG.monthDelayMs);
+    }
+
+    console.log('[msb] done: captured ' + capturedDays + ' of ' + totalDates +
+      ' training days across ' + months.length + ' months (' +
+      failedMonths + ' months failed)');
+
+    var ok = triggerDownload(output, CONFIG.downloadFilename);
+    if (ok) {
+      console.log('[msb] downloaded ' + CONFIG.downloadFilename);
+    } else {
+      console.log('[msb] automatic download blocked. Run window._msbDownload() to retry.');
+    }
+    console.log('[msb] data is also at window._msbData');
+
+    return output;
+  }
+
+  run()
+    .catch(function (err) {
+      console.log('[msb] fatal: ' + (err && err.message));
+    })
+    .finally(function () {
+      window._msbRunning = false;
+    });
+})();
+</script>
+
+<script>
+  (function () {
+    var src = document.getElementById('script-source').textContent;
+    document.getElementById('src').value = src;
+    var href = 'javascript:' + encodeURIComponent(src) + 'void%200';
+    var bm = document.getElementById('bm');
+    bm.setAttribute('href', href);
+    document.getElementById('status').textContent =
+      'Bookmarklet ready (' + Math.round(href.length / 1024) + ' KB). Drag the button to your bookmarks bar.';
+  })();
+</script>
+</body>
+</html>
