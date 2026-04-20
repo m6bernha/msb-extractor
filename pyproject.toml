@@ -99,6 +99,9 @@ select = [
     "B",    # flake8-bugbear
     "UP",   # pyupgrade
     "SIM",  # flake8-simplify
+    "RET",  # flake8-return (cleaner control flow)
+    "PIE",  # flake8-pie (misc lints)
+    "PERF", # perflint (obvious perf fixes)
     "RUF",  # ruff-specific
 ]
 ignore = [

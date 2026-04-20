@@ -52,48 +52,107 @@ send your data anywhere.
 ## What it does
 
 ```
-  +---------------------+        +----------------------+        +------------------------+
-  |  Your Chrome tab,   |        |                      |        |                        |
-  |  logged in at       |        |   msb_capture.json   |        |   training_log.xlsx    |
-  |  app.mystrengthbook |------->|   (raw HTML blobs)   |------->|   (Raw Log, weeks,     |
-  |  .com               |        |                      |        |    progress, charts)   |
-  +---------------------+        +----------------------+        +------------------------+
+  +---------------------+      +----------------------+      +------------------------+
+  |  Your browser tab,  |      |                      |      |                        |
+  |  logged in at       |      |   msb_capture.json   |      |   training_log.xlsx    |
+  |  app.mystrengthbook |----->|   (one JSON blob:    |----->|   (Raw Log, weeks,     |
+  |  .com               |      |    every set, every  |      |    progress, charts)   |
+  |                     |      |    full comment)     |      |                        |
+  +---------------------+      +----------------------+      +------------------------+
            ^                              ^                              ^
            |                              |                              |
-     Paste scraper JS             Python CLI parses it           Open in Excel / Numbers
-     into DevTools                                                 / LibreOffice
+     Paste scraper JS            Python CLI parses it             Open in Excel /
+     into DevTools               (msb-extractor parse)            Numbers / Sheets
 ```
 
-1. **Capture.** Open MyStrengthBook in your browser. While logged in, paste
-   a small JavaScript snippet into the DevTools console (or drag a one-click
-   bookmarklet). The snippet walks every calendar month and every training
-   day in your account and saves one JSON file to your computer.
-2. **Parse.** Run `msb-extractor parse ./msb_capture.json -o my-log.xlsx`.
-3. **Open.** That's it. Open the xlsx in the spreadsheet app of your choice.
+1. **Capture.** Paste [`scraper/msb-scraper.js`](scraper/msb-scraper.js)
+   into your browser's DevTools console while logged in to MyStrengthBook.
+   It fires a handful of parallel calls to MSB's own JSON API, grabs every
+   training day in a 24-month window (sets, loads, RPEs, complete per-set
+   comments) and saves one `msb_capture.json` file to your Downloads folder.
+   End-to-end runtime: **under one minute.**
+2. **Parse.** Run `python -m msb_extractor parse msb_capture.json -o training.xlsx`.
+3. **Open.** That's it. Open the xlsx in any spreadsheet app.
 
-The spreadsheet includes a flat "Raw Log" you can pivot on, one "Week ..."
-sheet per training week in the format coaches and lifters actually use
-(exercise rows with per-set loads), a per-exercise Progress sheet, and
-line charts of your estimated 1RM over time for every major lift.
+The spreadsheet includes a flat **Raw Log** you can pivot on, one
+**Week YYYY-MM-DD** sheet per training week in the format coaches and
+lifters actually use, a per-exercise **Progress** sheet, and line
+charts of your estimated 1RM over time for every major lift.
 
 ## Quick start
 
+Total time: **~5 minutes**, most of it in the browser. You only do this once.
+
+### Step 1 — Install the tool
+
 ```bash
-# 1. Install
-pip install msb-extractor
+git clone https://github.com/m6bernha/msb-extractor.git
+cd msb-extractor
 
-# 2. Capture your data
-#    Follow scraper/README.md (copy-paste script, or use the bookmarklet).
-#    You'll end up with a msb_capture.json file in your Downloads folder.
+# create an isolated Python environment
+python -m venv .venv
+source .venv/bin/activate                    # macOS / Linux
+# .venv\Scripts\activate                     # Windows PowerShell / cmd
+# source .venv/Scripts/activate              # Windows Git Bash
 
-# 3. Parse into a spreadsheet
-msb-extractor parse ~/Downloads/msb_capture.json -o ~/my-training-log.xlsx
-
-# 4. Open the xlsx in Excel, Numbers, LibreOffice, Google Sheets...
+# install the package
+pip install -e .
 ```
 
-If you have not got the package installed yet and do not want to, clone the
-repo and run `python -m msb_extractor parse …` directly.
+Requires Python 3.11 or newer. The tool is not on PyPI yet — installing from
+source is the current path.
+
+### Step 2 — Capture your training data from MSB
+
+1. Open [app.mystrengthbook.com](https://app.mystrengthbook.com) in a **regular** browser window
+   (Chrome, Edge, or Firefox — not Incognito, which has a separate cookie jar).
+   Log in as normal.
+2. Press `F12` to open DevTools. On Mac, use `Cmd+Option+I`.
+3. Click the **Console** tab across the top of the DevTools panel.
+4. If the console shows a red self-XSS warning, type the phrase it asks for
+   and press Enter. That unlocks pasting for the rest of the session — it's a
+   one-time browser safety check, not an error.
+5. Open [`scraper/msb-scraper.js`](scraper/msb-scraper.js) in any editor,
+   select all (`Ctrl+A` / `Cmd+A`), copy.
+6. Click once in the console input area at the bottom of DevTools, paste, press Enter.
+7. A small dark widget appears in the top-right corner of the MSB page
+   showing `phase: token`. The scraper is listening for MSB's next API call
+   so it can grab your auth token off it.
+8. **Within 15 seconds** of pasting, click a day on MSB's calendar (or
+   navigate to a month you haven't viewed this session). This forces MSB to
+   issue a fresh API call, which the scraper then snatches the token from.
+9. The widget advances to `phase: api` and counts up to 25 months. Typical
+   runtime is 30-60 seconds end-to-end.
+10. Your browser downloads `msb_capture.json` to its default download
+    folder. Move or copy that file somewhere you can find it (the repo's
+    `captures/` folder is a convenient choice — it's already gitignored).
+
+**If step 8 times out** (`token_capture_timeout`), reload the MSB page (`F5`),
+re-paste the scraper, and click a calendar day within 15 seconds of pasting.
+Full troubleshooting lives in [scraper/README.md](scraper/README.md).
+
+### Step 3 — Turn the capture into a spreadsheet
+
+From the repo root, with your venv activated:
+
+```bash
+# quick sanity check — prints a summary without writing any file
+python -m msb_extractor info captures/msb_capture.json
+
+# produce the xlsx
+python -m msb_extractor parse captures/msb_capture.json -o captures/training.xlsx
+```
+
+The `info` command prints date range, training-day count, set count, and
+which probe endpoints the scraper captured. The `parse` command writes the
+xlsx and prints a summary like `Parsed 192 training days, 2,484 sets total,
+across 28 exercises.`
+
+### Step 4 — Open the spreadsheet
+
+Open `captures/training.xlsx` in Excel, Numbers, LibreOffice, or upload it
+to Google Sheets. See [Output sheets](#output-sheets) below for what each
+tab contains.
 
 ## What gets extracted
 
@@ -106,15 +165,13 @@ For every training day in your account the parser pulls out:
   load where the coach used a percentage
 - **Actual**: the reps you performed, the RPE you logged, the load you
   lifted, MSB's computed %1RM and estimated 1RM
-- **Your comments** on each set, in full (the notes you typed into the
-  "description" box — "elbows slotted", "felt strong", "depresso 2am
-  session"). MyStrengthBook only ships a ~40-character preview in the
-  page HTML, so the scraper clicks every truncated note in a hidden
-  iframe and recovers the full text before writing the capture file —
-  see [scraper/README.md](scraper/README.md#full-per-set-comments) for
-  the details.
+- **Your comments on each set, in full.** MyStrengthBook's page HTML
+  only shows a ~40-character preview (older v3 scrapers had to click
+  through every one to recover the full text). v4 reads MSB's JSON API
+  directly, so the complete note — whether 5 characters or 900 —
+  arrives in one shot with zero truncation workaround.
 - Completion status per set (completed, partial, missed, prescribed only)
-- Video-attachment links when you uploaded a lift video
+- Video-attachment metadata when you uploaded a lift video
 
 ## Output sheets
 
@@ -179,21 +236,30 @@ Names not in the file pass through unchanged.
 
 ### Scraper configuration
 
-The scraper covers the last 24 months by default. To change the window,
-edit the `CONFIG` block at the top of
+The scraper covers the **last 24 months by default**. To change the window
+or the pacing, edit the `CONFIG` block near the top of
 [scraper/msb-scraper.js](scraper/msb-scraper.js) before pasting:
 
 ```js
 var CONFIG = {
-  startMonth: '2024-01',     // inclusive
-  endMonth: null,            // null = current month
-  monthDelayMs: 200,
-  dayDelayMs: 300,
-  retryBackoffMs: 800,
+  startMonth: null,                 // 'YYYY-MM'; null => current month - 24
+  endMonth: null,                   // 'YYYY-MM'; null => current month
+  monthConcurrency: 5,              // parallel API month fetches
+  monthDelayMs: 40,
   retryCount: 2,
-  downloadFilename: 'msb_capture.json'
+  retryBackoffMs: 800,
+  requestTimeoutMs: 20000,
+  authToken: null,                  // set a JWT here to bypass auto-capture
+  tokenCaptureTimeoutMs: 15000,
+  heartbeatMs: 10000,
+  showWidget: true,
+  downloadFilename: 'msb_capture.json',
+  partialFilename: 'msb_capture_partial.json'
 };
 ```
+
+Full scraper docs (auth model, probe endpoints, troubleshooting failure
+modes) live in [scraper/README.md](scraper/README.md).
 
 ## Privacy
 
@@ -245,27 +311,28 @@ See [docs/terms-of-use.md](docs/terms-of-use.md) for the full text.
 
 ## Installation
 
-### With pip
-
-```bash
-pip install msb-extractor
-```
-
-Requires Python 3.11 or newer.
-
-### From source
+### From source (current path)
 
 ```bash
 git clone https://github.com/m6bernha/msb-extractor.git
 cd msb-extractor
+python -m venv .venv
+source .venv/bin/activate    # Windows: .venv\Scripts\activate
 pip install -e .
 ```
 
-### Dev install
+Requires Python 3.11 or newer.
+
+### Dev install (adds pytest / ruff / mypy)
 
 ```bash
 pip install -e ".[dev]"
 ```
+
+### With pip (future)
+
+A PyPI release is planned once the probe-endpoint parsers land. Until
+then, install from source.
 
 ## Publishing your own fork
 

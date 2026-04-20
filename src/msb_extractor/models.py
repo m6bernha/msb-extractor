@@ -102,6 +102,12 @@ class Capture(BaseModel):
     blobs. schemaVersion 4 populates ``api_months`` with per-month JSON
     responses from MSB's ``/api/v1/exercise`` endpoint. Both paths
     downstream-parse into the same ``ParseResult``.
+
+    schemaVersion 4 may also populate ``api_probes`` with raw responses
+    from supplementary endpoints (``/modified``, ``/workout-note``,
+    ``/personal-records``). These are captured opportunistically so we
+    can pin down their shape in a follow-up release; the current parser
+    passes them through untouched.
     """
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
@@ -112,6 +118,7 @@ class Capture(BaseModel):
     calendars: dict[str, str] = Field(default_factory=dict)
     days: dict[str, str] = Field(default_factory=dict)
     api_months: dict[str, Any] = Field(default_factory=dict, alias="apiMonths")
+    api_probes: dict[str, Any] = Field(default_factory=dict, alias="apiProbes")
 
 
 class ParseResult(BaseModel):
@@ -122,6 +129,10 @@ class ParseResult(BaseModel):
     days: list[TrainingDay] = Field(default_factory=list)
     captured_at: datetime | None = None
     source: str = "app.mystrengthbook.com"
+    # Raw probe responses passed through from the scraper. Not yet parsed
+    # into domain models — kept so the CLI's ``info`` command can surface
+    # them and downstream tooling can iterate on parsing later.
+    api_probes: dict[str, Any] = Field(default_factory=dict)
 
     @property
     def date_range(self) -> tuple[date_type, date_type] | None:

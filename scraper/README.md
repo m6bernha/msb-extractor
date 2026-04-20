@@ -1,93 +1,110 @@
-# MSB Extractor - Scraper
+# MSB Extractor — Scraper (v4)
 
 The browser-side half of `msb-extractor`. It runs inside your own
-logged-in MyStrengthBook session, collects the HTML pages your browser
-can already see, and saves them as a single JSON file. The Python CLI
-(`src/`) then parses that file into an `.xlsx` workbook.
+logged-in MyStrengthBook session, fetches your training data from MSB's
+own JSON API, and saves it as a single local JSON file. The Python CLI
+(`src/msb_extractor/`) then parses that file into an `.xlsx` workbook.
 
-Nothing here talks to MyStrengthBook on your behalf without you - the
+Nothing here talks to MyStrengthBook on your behalf without you — the
 script only runs when you tell your own browser to run it.
 
-## What gets captured
+---
 
-> **v4 (schemaVersion 4) shipped 2026-04-20.** The scraper now captures
-> MSB's JSON API at `app-us.mystrengthbook.com/api/v1/exercise` directly
+## How v4 works
+
+> **v4 (schemaVersion 4) shipped 2026-04-20 and was validated against a
+> real 24-month, 192-training-day session.** The scraper captures MSB's
+> JSON API at `app-us.mystrengthbook.com/api/v1/exercise` directly
 > rather than scraping HTML. A full 24-month capture finishes in **under
-> a minute** instead of hours, and per-set comments arrive complete with
-> no truncation workaround. Auth is auto-discovered by intercepting one
-> live MSB call at startup. v1-v3 captures still parse; see schema notes
-> below.
+> a minute**, and per-set comments arrive in full with no truncation.
+> v1-v3 HTML captures still parse, but the scraper itself is now
+> JSON-only.
 
-One file, `msb_capture.json`, with this shape:
+**Auth model.** MSB's API uses a JWT in a lowercase `auth:` header,
+not cookies. The scraper intercepts one live `/api/v1/...` call the
+MSB page naturally makes (by monkey-patching `window.fetch` and
+`XMLHttpRequest.prototype.setRequestHeader`), lifts the token, and
+reuses it for 25 parallel month fetches. Credentials mode is
+`same-origin` — `include` breaks CORS on this domain.
+
+**Output shape.** One file, `msb_capture.json`:
 
 ```json
 {
-  "schemaVersion": 3,
-  "capturedAt": "2026-04-17T18:00:00.000Z",
-  "capturedAtMs": 1744848000000,
+  "schemaVersion": 4,
+  "capturedAt": "2026-04-20T19:07:40.723Z",
+  "capturedAtMs": 1745177260723,
   "source": "app.mystrengthbook.com",
-  "calendars": { "2024-05": "<html>", "2024-06": "<html>", ... },
-  "days":      { "2024-05-03": "<html>", "2024-05-06": "<html>", ... }
+  "api": {
+    "base": "https://app-us.mystrengthbook.com/api/v1",
+    "userId": "<your MSB user id>",
+    "tokenExpires": "2026-05-20T03:22:36.643Z",
+    "tokenHash": "eyJ0eX…gkls8M"
+  },
+  "apiMonths": {
+    "2025-01": [ /* array of exercise objects for that month */ ],
+    "2025-02": [ ... ],
+    ...
+  },
+  "apiProbes": {
+    "modified":        { "ok": true,  "status": 200, "body": ... },
+    "workoutNote":     { "ok": true,  "status": 200, "body": ... },
+    "personalRecords": { "ok": true,  "status": 200, "body": ... }
+  },
+  "stats": { "exercises": 908, "sets": 1871, "trainingDays": 192 }
 }
 ```
 
-Only dates that rendered an `actuals-outcomes` block (i.e. a real
-training session with logged sets) are saved. Rest days and empty pages
-are skipped.
+Each exercise object contains (among other fields) a `sets[]` array
+where every entry is a **prescription group** (e.g. "3x12 @ 40kg"):
+top-level `reps`/`load`/`rpe` are the plan, and the actually-performed
+sets live nested in `outcomes: { "0": {...}, "1": {...}, "2": {...} }`.
+Per-set comments live in `comments: { "0": "...", "2": "..." }` keyed
+by the same outcome index. The Python parser expands each entry into
+one `ActualSet` per outcome.
 
-### Full per-set comments
+### Probe endpoints (exploratory, best-effort)
 
-MyStrengthBook renders only a ~40-character preview of each per-set
-comment in the server HTML (long notes are cut to a prefix and end in a
-literal `...`). The full text is fetched lazily when the user clicks the
-preview.
+After the main exercise capture lands, the scraper opportunistically
+hits three endpoints MSB ships alongside `/exercise`:
 
-v3 recovers the full text with a **two-strategy** expansion pass.
+| Probe | Endpoint | Scope |
+|---|---|---|
+| `modified` | `/api/v1/modified` | Change-log / substitutions |
+| `workoutNote` | `/api/v1/workout-note` | Day-level notes |
+| `personalRecords` | `/api/v1/personal-records` | PR history |
 
-1. **Endpoint probe (fast path).** The scraper extracts an
-   `(exerciseId, setIndex)` pair from a captured day's HTML and
-   probes a short list of candidate `/actions/refresh?modal[type]=…`
-   URLs (`exercise-set-description`, `set-comment`, etc.). If any
-   candidate returns the full comment text, every subsequent
-   expansion is a single ~150 ms fetch. A full 24-month capture with
-   ~1500 comments finishes in about **2-4 minutes**.
-2. **Iframe pool (fallback).** If the probe fails MSB's comment modal
-   is rendered entirely client-side, so v3 falls back to v2's approach
-   — a pool of hidden same-origin iframes (default concurrency 2) that
-   load each eligible day, click each truncated preview, and harvest
-   the modal text. Slower (~30-60 min for a heavy account) but still
-   parallelised.
+Each is fetched once with the overall capture date window, no retries.
+Failures are **non-fatal** and get recorded under `apiProbes[name]`
+with the HTTP status and error. These responses are stored verbatim
+so the Python side can pin down their shape offline — first-class
+parsers will land once a real capture confirms the fields. This is
+the same "verify before parsing" discipline that rescued the main
+exercise parser from yesterday's guessing.
 
-In both strategies, the full text is written back into the captured
-HTML as a `data-full-comment` attribute on the source `<p>`. The
-Python parser prefers that attribute, so you get the complete comment
-in the `Raw Log` and `Week …` sheets.
+## Observability
 
-Older v1 and v2 captures still parse, but any comment that MSB
-truncated will remain cut off — re-run the current scraper to recover
-them.
-
-### Observability
-
-v3 publishes live progress on the page's window object so external
+v4 publishes live progress on the page's window object so external
 tooling (browser-automation agents, devtools snippets) can distinguish
 "working" from "wedged" without scraping console text.
 
-- `window._msbProgress` — structured object with `phase`,
-  `calendars`, `days`, `expansion`, `elapsedMs`, `etaMs`, `aborted`,
-  `fatal`, and the current in-flight `month` / `date`.
-- `window._msbEvents` — rolling array of every log event, each with
+- `window._msbProgress` — structured progress: `phase`, `months`,
+  `probes`, `stats`, `current.month`, `elapsedMs`, `etaMs`, `aborted`,
+  `fatal`.
+- `window._msbEvents` — rolling array of every log event with
   `t` (timestamp) and `type`.
-- `window._msbAbort()` — graceful stop; the scraper finishes the
-  current item, writes a `msb_capture_partial.json`, then exits.
-- `window.addEventListener('msb:progress', e => …)` — event-driven
-  hook fired on every state change.
-- A floating widget in the top-right of the MSB tab shows phase,
-  counters, elapsed time, ETA, and an Abort button. Disable with
-  `CONFIG.showWidget = false`.
+- `window._msbData` — the capture object being built, updated live.
+- `window._msbApiSample` — the first 2 exercise objects of the first
+  successful month. Handy for inspecting shape in DevTools.
+- `window._msbDiagnose()` — dumps progress + config + recent events.
+- `window._msbDownload()` — re-saves the current `_msbData` if the
+  browser blocked the initial download.
+- `window._msbAbort()` — graceful stop; writes `msb_capture_partial.json`.
+- `window.addEventListener('msb:progress', e => ...)` — event-driven hook.
 
-A 15-second heartbeat writes a progress snapshot so a silent tab
-becomes visible immediately.
+A floating widget in the top-right of the MSB tab shows phase, month
+counter, probe counter, elapsed time, and an Abort button. Disable
+with `CONFIG.showWidget = false`.
 
 ## Prerequisites
 
@@ -95,12 +112,11 @@ becomes visible immediately.
   in the same browser you'll run the script from.
 - A modern desktop browser (Chrome, Edge, or Firefox within the last
   couple of years).
-- A **regular** browser window - not Incognito/Private. Private windows
+- A **regular** browser window — not Incognito/Private. Private windows
   have a separate cookie jar and won't be authenticated.
 - Auto-downloads allowed for the MSB domain. If your browser asks where
-  to save each download, the script's download may be blocked silently
-  on the first try; see the "Download didn't happen" troubleshooting
-  below.
+  to save each download, the first save may be blocked silently — see
+  "Download didn't happen" below.
 
 ## Install (pick one)
 
@@ -110,18 +126,26 @@ becomes visible immediately.
 2. Open DevTools (`F12`, or `Ctrl+Shift+I` / `Cmd+Opt+I`), switch to the
    **Console** tab.
 3. If the console shows a self-XSS warning, type the phrase it asks for
-   and press Enter to unlock paste.
+   and press Enter to unlock paste. One-time per browser session.
 4. Open `msb-scraper.js` in this folder, copy its entire contents, paste
    into the console, press Enter.
-5. Watch the progress lines scroll by. When it's done, your browser
-   will save `msb_capture.json` to your downloads folder.
+5. The widget appears. Within 15 seconds, click a day on MSB's calendar
+   (or navigate to a month you haven't viewed yet) so MSB fires the
+   `/api/v1` call the scraper needs to see.
+6. Watch the widget. When it's done, your browser saves
+   `msb_capture.json` to your downloads folder.
 
 ### B. Drag the bookmarklet (one-click reruns)
 
 1. Open `bookmarklet.html` from this folder in your browser.
-2. Drag the blue **MSB Extractor** button onto your bookmarks bar.
+2. Drag the **MSB Extractor** button onto your bookmarks bar.
 3. Navigate to `app.mystrengthbook.com` while logged in.
 4. Click the bookmark. Open DevTools first if you want to see progress.
+
+> The checked-in bookmarklet is a frozen snapshot of the v4 script. It
+> does **not** yet include the new probe-endpoint capture. If you want
+> the probes, paste `msb-scraper.js` directly (option A). The next
+> bookmarklet regeneration will pull them in.
 
 ### C. Install as a userscript
 
@@ -140,9 +164,8 @@ If you already have Tampermonkey / Violentmonkey / Greasemonkey:
    // ==/UserScript==
    ```
 
-4. Save. The script will then run every time you land on an MSB page -
-   if you don't want that, leave it **disabled** and flip it on only
-   when you want to capture.
+4. Save. Keep it **disabled** by default and flip it on when you want
+   to capture — the script runs the moment it loads.
 
 ## Configuration
 
@@ -150,147 +173,115 @@ The top of `msb-scraper.js` has a `CONFIG` object:
 
 ```js
 var CONFIG = {
-  // Date range.
-  startMonth: null, endMonth: null,
-
-  // Network concurrency and pacing. All fetches use the user's
-  // existing MSB session cookies.
-  monthConcurrency: 3, dayConcurrency: 3,
-  monthDelayMs: 50, dayDelayMs: 80,
-  retryCount: 2, retryBackoffMs: 800,
-
-  // Comment expansion.
-  expandComments: true,
-  probeComments: true,
-  probeCommentCandidates: [
-    'exercise-set-description', 'exercise-set-comment',
-    'exercise-set-note', 'edit-set-description',
-    'set-description', 'set-comment', 'set-note'
-  ],
-  probeConcurrency: 5, probeTimeoutMs: 5000,
-
-  // Iframe fallback (only used if the probe fails).
-  expandConcurrency: 2, expandTimeoutMs: 8000,
-  expandClickDelayMs: 80, expandPostClickPollMs: 60,
-  expandPostClickMaxPolls: 40, expandModalCloseDelayMs: 60,
-  iframeHydrationPollMs: 150,
-
-  heartbeatMs: 15000, showWidget: true,
+  startMonth: null,                 // 'YYYY-MM' or null (current month - 24)
+  endMonth: null,                   // 'YYYY-MM' or null (current month)
+  monthConcurrency: 5,              // parallel API fetches
+  monthDelayMs: 40,
+  retryCount: 2,
+  retryBackoffMs: 800,
+  requestTimeoutMs: 20000,
+  authToken: null,                  // preset JWT; skips auto-capture
+  tokenCaptureTimeoutMs: 15000,
+  tokenPokeIntervalMs: 1500,
+  heartbeatMs: 10000,
+  showWidget: true,
   downloadFilename: 'msb_capture.json',
   partialFilename: 'msb_capture_partial.json'
 };
 ```
 
-Edit these values before pasting if you want a narrower date range, a
-different pace, or to disable the widget. The most common reason to
-change `startMonth` is to back-fill older data; the defaults only
-cover the last 24 months.
+Common adjustments:
 
-Set `expandComments: false` to skip the comment-expansion pass. The
-scrape is faster but any comment MSB truncated stays cut off.
-
-Set `probeComments: false` to force the iframe fallback path even
-when the endpoint probe would have worked. Useful for debugging.
+- **Broader history** — set `startMonth: '2020-01'` to reach further back.
+- **Preset token** — paste your JWT into `authToken` to bypass the
+  15-second auto-capture window. Useful when running in a throttled tab
+  or when MSB's client-side cache is aggressive. Grab the token from
+  DevTools **Network** tab → filter `api/v1` → click any request →
+  Request Headers → `auth: eyJ0eX...`.
+- **Tighter pacing** — increase `monthDelayMs` if you're seeing rate-limit
+  responses (unlikely at current defaults, but available).
 
 ## Expected runtime
 
-v3 runtime depends entirely on which expansion strategy wins.
+- **Typical run (24 months, heavy user):** 30-60 seconds total, dominated
+  by parallel JSON fetches. Probes add ~1-3 seconds.
+- **Token discovery:** up to 15 seconds while the scraper waits for MSB
+  to issue a natural `/api/v1/...` call. Clicking a calendar day triggers
+  one immediately.
+- **Download:** sub-second; the whole capture is typically 1-5 MB.
 
-- **Endpoint probe hits** (the expected fast path):
-  **~2-4 minutes** for a 24-month heavy-user capture. Dominated by
-  parallel HTML fetches; comments become tiny targeted GETs.
-- **Endpoint probe misses, iframe fallback kicks in**:
-  **~30-60 minutes** for the same capture. Still significantly
-  faster than v2 because iframes run in a concurrency-2 pool instead
-  of strictly serial.
-- **Expansion disabled** (`expandComments: false`):
-  **~1-2 minutes**. Long comments stay as MSB's `...` preview.
-
-The widget in the top-right of the tab shows an ETA once the first
-~10 % of work is done, so you can set the tab aside and come back
-when it says `done`. Leave the tab foregrounded — background tabs
-get timer-throttled, and the iframe fallback needs the page
-foregrounded to hydrate reliably.
-
-Check the final console summary (or `window._msbProgress`) for
-which strategy ran: `progress.expansion.strategy` will be
-`"endpoint"` (probe won) or `"iframe"` (fallback was used).
+The widget's `elapsed` line advances in real time; `eta` appears once
+the first handful of months complete.
 
 ## Troubleshooting
 
-**HTTP 500 on the first fetch.**
-The calendar endpoint requires `?month=YYYY-MM`; without it the server
-returns 500. The script always sends it, so if you see this error you're
-likely hitting a modified or truncated version - re-copy the script.
+**`token_capture_timeout` after 15 seconds.**
+The scraper didn't observe MSB issuing an API call. MSB's client-side
+cache is likely serving from memory. Two fixes:
+1. Reload the MSB page (`F5`), paste the scraper again, then click a
+   day you haven't viewed this session within 15 seconds.
+2. Or grab the JWT manually: DevTools → Network → filter `api/v1` →
+   any request → Headers → Request Headers → copy the `auth` value →
+   edit `scraper/msb-scraper.js` and set `authToken: '<paste>'`
+   before pasting. This skips auto-capture entirely.
 
-**Empty results / zero training dates found.**
-Most likely your session expired. Load the MSB calendar page in the
-same tab, confirm it renders your data, then rerun. The capture script
-reuses the browser's cookies via `credentials: 'include'`, so if you can
-see the page, the script can too.
+**`fatal: MSB rejected the auth token (401/403)`.**
+Your MSB session expired during the run. Reload
+`app.mystrengthbook.com` in the same tab to refresh the session, then
+rerun the scraper.
 
-**`[msb] skip YYYY-MM-DD - missing actuals-outcomes marker`.**
-That date's page loaded but doesn't contain the block the parser needs
-(it's often a blank template a coach left behind, or a day that was
-logged outside the normal flow). The script retries and then moves on;
-those dates will simply be absent from the output file.
+**CORS or "failed to fetch" errors.**
+You're on the wrong domain. The script must be pasted into a console
+whose page origin is `app.mystrengthbook.com`. Running it on any
+other site fails because the auth header won't be sent.
+
+**Empty results / zero training days found.**
+Your capture window is outside your active training history, or
+MSB returned empty data. Check the widget's `months` counter — if
+all 25 months "succeeded" but `exercises` is 0, the window is empty.
+Try broadening `startMonth` in CONFIG.
 
 **Download didn't happen.**
-Some browsers block programmatic downloads the first time. Open the
-console and run:
+Some browsers block programmatic downloads on the first attempt. Run
+this in the console:
 
 ```js
 window._msbDownload()
 ```
 
-That re-triggers the save using the already-captured data. If that
-still fails, copy the object with:
+If that still fails, copy the data manually:
 
 ```js
 copy(JSON.stringify(window._msbData))
 ```
 
-and paste it into a new file named `msb_capture.json`.
+and paste into a new file named `msb_capture.json`.
 
-**`self-XSS` paste warning in the console.**
+**`self-XSS` paste warning.**
 Chrome and Edge block pasting into the console until you type the
-required phrase once per session. This is a browser safety feature, not
-an error from this script.
+required phrase once per session. This is a browser safety feature,
+not an error from this script.
 
-**CORS errors.**
-You're on the wrong domain. The script must be pasted into a console
-whose page origin is `app.mystrengthbook.com`. Running it on any other
-site will fail because the cookies aren't sent.
+**Stuck `_msbRunning = true` on re-paste.**
+If a previous run crashed before the `finally` clause, every
+subsequent paste silently no-ops. Run `window._msbRunning = false`
+then re-paste. (The current scraper's `finally` block clears this,
+so this should not happen, but it's an easy recovery if you see
+`[msb] already running in this tab`.)
 
-**Log line: `expand failed (hydration timeout)` on many days.**
-The iframe loaded but React did not finish hydrating before
-`expandTimeoutMs` elapsed. This is usually a foreground/throttling
-issue — keep the tab visible, close unrelated heavy tabs, and rerun.
-If it persists, bump `expandTimeoutMs` to `15000` and retry. The run
-still finishes either way; affected days just keep the `...`-terminated
-previews.
-
-**Log line: `no full comments recovered` for a day that has long notes.**
-MSB rendered the modal in a layout the matcher didn't recognise (most
-commonly because the full text is broken across multiple elements or
-the preview had unusual whitespace). File an issue with the day's HTML
-snippet — see [CONTRIBUTING.md](../CONTRIBUTING.md) — and in the
-meantime set `expandComments: false` to skip the pass entirely and fall
-back to MSB's preview text.
-
-**Comments in the xlsx still end in `...`.**
-Either you are parsing a v1 capture (`schemaVersion: 1`) that was
-produced before the fix, or the comment-expansion pass did not recover
-that specific entry. Regenerate the capture with the current script and
-check `[msb] comment expansion: enriched N of M days` in the console —
-N should be close to M.
+**Probe endpoints all fail.**
+Probes are best-effort and non-fatal — a 404 or 400 on any of them
+does not affect the main capture. Inspect
+`window._msbData.apiProbes[name]` to see the error. Most likely MSB
+changed the endpoint path or param shape. File an issue with the
+recorded `status`, `error`, and `body` fields.
 
 ## What this does NOT do
 
-- No passwords, tokens, or cookies leave your browser. The script only
-  calls `app.mystrengthbook.com` endpoints that your browser can already
-  call.
+- No passwords, tokens, or cookies are sent anywhere except
+  `app-us.mystrengthbook.com`. The auth JWT the scraper uses is the
+  one your browser already holds.
 - No data is uploaded anywhere. The output is a local file download.
 - No background execution. Close the tab and everything stops.
-- No scraping of other users' data - the endpoints only return the
+- No scraping of other users' data — the API only returns the
   logged-in account's own data.

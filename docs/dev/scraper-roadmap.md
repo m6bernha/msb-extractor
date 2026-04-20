@@ -26,19 +26,40 @@ capture script at [scraper/msb-scraper.js](../../scraper/msb-scraper.js).
 - Runtime target achieved: **<1 minute for 24 months**, down from 3+
   hours in v3. No HTML parsing, no iframe hydration, no comment-modal
   clicking, no probe guessing.
-- Schema bumped to 4: top-level `apiMonths: {YYYY-MM: [exercises]}`.
+- Schema bumped to 4: top-level `apiMonths: {YYYY-MM: [exercises]}`
+  plus `apiProbes: {name: rawResponse}` for exploratory endpoints.
 - Python parser grew a v4 path (`parser/api.py`) that reads the JSON
   directly. v1-v3 HTML captures continue to parse unchanged.
 
-Known unknowns (carry forward):
+### Validated against a live session — 2026-04-20
 
-- The exact field names MSB's API uses inside each exercise and each
-  set are inferred from the SPA's request URL. The parser is defensive
-  (`_first_of('actualReps', 'performedReps', 'reps', …)`) but some
-  assumptions may need correction after the first real capture —
-  especially around the `sets` array. Synthetic fixtures in
-  `tests/test_parser_api.py` reflect current guesses; if the real
-  shape differs, update the `_first_of` lists rather than rewriting.
+Real 24-month capture from a heavy user (192 training days). Findings:
+
+- **Runtime confirmed under a minute.** The widget ticked through
+  25 month fetches in parallel and the JSON download fired cleanly.
+- **Parser field names needed correction** — yesterday's synthetic
+  fixtures had the shape wrong. Each entry in an exercise's `sets[]`
+  is a *prescription group*, not a single performed set:
+  - Top-level `reps`/`load`/`rpe` are the plan.
+  - Actuals live in `outcomes[i].outcome.{reps,load,rpe,e1rm}`.
+  - Comments live in `comments[i]` (keyed by the same outcome index),
+    not at the entry level.
+  The parser now expands one entry into N `ActualSet` rows and pulls
+  per-outcome comments — see [parser/api.py](../../src/msb_extractor/parser/api.py)
+  and the regression tests in
+  [test_parser_api.py](../../tests/test_parser_api.py).
+- **Numbers now match reality:** 192 training days, 28 unique
+  exercises, 2,304 completed + 3 missed + 177 prescribed-only sets,
+  1,411 rows with free-text comments, longest single comment 966
+  characters. No truncation artifacts in the sample.
+- **Probe endpoints landed, parsing deferred.** The scraper now
+  opportunistically hits `/api/v1/modified`, `/api/v1/workout-note`,
+  and `/api/v1/personal-records` after the main exercise capture and
+  stores each raw response under `output.apiProbes[name]`. Failures
+  are non-fatal. A future iteration will wire first-class parsers
+  for these once a real capture pins down their shape — the explicit
+  lesson from the v4 parser fix is **do not guess field names; verify
+  against live data first**.
 
 ## What shipped in v3
 

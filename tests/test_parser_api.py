@@ -247,6 +247,30 @@ def test_actuals_read_nested_outcome_not_top_level_plan() -> None:
     assert actual.rpe == 8.5
 
 
+def test_api_probes_pass_through_untouched() -> None:
+    """Probe responses are carried to ParseResult verbatim for downstream inspection."""
+    probe_payload = {
+        "modified": {"ok": True, "status": 200, "body": {"docs": []}},
+        "workoutNote": {"ok": False, "status": 404, "error": "HTTP 404", "body": "not found"},
+        "personalRecords": {
+            "ok": True,
+            "status": 200,
+            "body": [{"exercise": "bench", "load": 200}],
+        },
+    }
+    capture = Capture.model_validate(
+        {
+            "schemaVersion": 4,
+            "capturedAt": "2025-01-27T12:00:00Z",
+            "source": "app.mystrengthbook.com",
+            "apiMonths": {"2025-01": _synth_month()},
+            "apiProbes": probe_payload,
+        }
+    )
+    result = parse_capture(capture)
+    assert result.api_probes == probe_payload
+
+
 def test_entry_with_no_outcomes_still_shows_as_prescribed_only() -> None:
     """A planned-but-not-performed entry yields 0 actuals and 1 prescribed row."""
     raw = [

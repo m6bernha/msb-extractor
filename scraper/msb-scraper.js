@@ -66,6 +66,17 @@
     'ladderDirection', 'ladderIncrement', 'metconResult', 'customName'
   ];
 
+  // Probe endpoints we know MSB ships but whose JSON shape we have not
+  // pinned down yet. Each is fetched once, best-effort, after the main
+  // exercise capture lands. Failures never block the primary scrape —
+  // responses are stored raw under output.apiProbes so the Python side
+  // can inspect them offline and grow first-class parsers next iteration.
+  var PROBES = [
+    { name: 'modified', path: '/modified', withDateRange: true },
+    { name: 'workoutNote', path: '/workout-note', withDateRange: true },
+    { name: 'personalRecords', path: '/personal-records', withDateRange: false }
+  ];
+
   // ------------------------------------------------------------------
   // State exposed on window
   // ------------------------------------------------------------------
@@ -86,6 +97,7 @@
     aborted: false,
     fatal: null,
     months: { total: 0, fetched: 0, failed: 0 },
+    probes: { total: 0, fetched: 0, failed: 0 },
     stats: { exercises: 0, sets: 0, trainingDays: 0 },
     current: { month: null }
   };
@@ -106,6 +118,7 @@
       tokenHash: null
     },
     apiMonths: {},
+    apiProbes: {},
     stats: { exercises: 0, sets: 0, trainingDays: 0 }
   };
   window._msbData = output;
@@ -127,6 +140,7 @@
       recentEvents: events.slice(tailStart),
       outputStats: {
         months: Object.keys(output.apiMonths || {}).length,
+        probes: Object.keys(output.apiProbes || {}).length,
         exercises: output.stats.exercises,
         sets: output.stats.sets,
         trainingDays: output.stats.trainingDays,
@@ -187,6 +201,10 @@
           ' (' + progress.months.fetched + '/' + progress.months.total + ')';
       case 'api_month_fail':
         return 'month ' + e.month + ' FAILED: ' + e.error;
+      case 'probe_ok':
+        return 'probe ' + e.probe + ' → HTTP ' + e.status + ' (' + (e.size || 0) + ' bytes)';
+      case 'probe_fail':
+        return 'probe ' + e.probe + ' FAILED: ' + e.error + ' (non-fatal)';
       case 'heartbeat':
         return 'heartbeat phase=' + progress.phase +
           ' months=' + progress.months.fetched + '/' + progress.months.total +
@@ -252,6 +270,10 @@
     lines.push('phase:    ' + progress.phase);
     lines.push('months:   ' + progress.months.fetched + '/' + progress.months.total +
       (progress.months.failed ? ' (' + progress.months.failed + ' failed)' : ''));
+    if (progress.probes.total) {
+      lines.push('probes:   ' + progress.probes.fetched + '/' + progress.probes.total +
+        (progress.probes.failed ? ' (' + progress.probes.failed + ' failed)' : ''));
+    }
     lines.push('exercise: ' + progress.stats.exercises);
     lines.push('sets:     ' + progress.stats.sets);
     lines.push('days:     ' + progress.stats.trainingDays);
@@ -501,6 +523,74 @@
   }
 
   // ------------------------------------------------------------------
+  // Probe endpoints (best-effort, non-fatal)
+  // ------------------------------------------------------------------
+  function buildProbeUrl(probe, range) {
+    var url = API_BASE + probe.path;
+    if (probe.withDateRange && range) {
+      var gte = range.start.replace('-', '') + '01';
+      // resolveRange returns YYYY-MM month keys; use the full bracket of the window.
+      var endParts = range.end.split('-');
+      var endY = parseInt(endParts[0], 10);
+      var endM = parseInt(endParts[1], 10);
+      var lastDay = new Date(endY, endM, 0).getDate();
+      var lte = range.end.replace('-', '') + pad2(lastDay);
+      url += '?utcDate%5B%24gte%5D=' + gte + '&utcDate%5B%24lte%5D=' + lte;
+    }
+    return url;
+  }
+
+  async function fetchProbe(probe, token, range) {
+    var url = buildProbeUrl(probe, range);
+    var record = { url: url, ok: false, status: null, contentType: null, body: null, error: null };
+    try {
+      var res = await fetchWithTimeout(url, {
+        credentials: 'same-origin',
+        headers: { auth: token }
+      }, CONFIG.requestTimeoutMs);
+      record.status = res.status;
+      record.contentType = res.headers.get('content-type') || null;
+      var text = await res.text();
+      record.bytes = text.length;
+      if (record.contentType && record.contentType.indexOf('application/json') !== -1) {
+        try { record.body = JSON.parse(text); } catch (_) { record.body = text; }
+      } else {
+        // Non-JSON responses (HTML error pages etc) — store the first 2kb verbatim for diagnosis.
+        record.body = text.length > 2048 ? text.slice(0, 2048) + '…[truncated]' : text;
+      }
+      if (res.status === 401 || res.status === 403) {
+        record.error = 'auth_expired';
+      } else if (!res.ok) {
+        record.error = 'HTTP ' + res.status;
+      } else {
+        record.ok = true;
+      }
+    } catch (err) {
+      record.error = (err && err.message) || 'unknown';
+    }
+    return record;
+  }
+
+  async function runProbes(token, range) {
+    progress.probes.total = PROBES.length;
+    updateWidget();
+    var tasks = PROBES.map(function (probe) {
+      return (async function () {
+        var rec = await fetchProbe(probe, token, range);
+        output.apiProbes[probe.name] = rec;
+        if (rec.ok) {
+          progress.probes.fetched++;
+          logEvent('probe_ok', { probe: probe.name, status: rec.status, size: rec.bytes });
+        } else {
+          progress.probes.failed++;
+          logEvent('probe_fail', { probe: probe.name, error: rec.error || ('HTTP ' + rec.status) });
+        }
+      })();
+    });
+    await Promise.all(tasks);
+  }
+
+  // ------------------------------------------------------------------
   // Download
   // ------------------------------------------------------------------
   function triggerDownload(obj, filename) {
@@ -605,6 +695,15 @@
 
       if (aborted) { throw new Error('aborted'); }
       recomputeStats();
+
+      progress.phase = 'probes';
+      updateWidget();
+      try {
+        await runProbes(token, range);
+      } catch (probeErr) {
+        // Probes are best-effort. Record the failure but let the scrape finish.
+        logEvent('probe_fail', { probe: '*', error: (probeErr && probeErr.message) || 'unknown' });
+      }
 
       progress.phase = 'download';
       var ok = triggerDownload(output, CONFIG.downloadFilename);

@@ -101,8 +101,7 @@ def _expand_rows(
             )
             rows.append(_row_from_actual(day, ex, display_name, pres, actual))
     else:
-        for pres in ex.prescribed:
-            rows.append(_row_from_prescribed(day, ex, display_name, pres))
+        rows.extend(_row_from_prescribed(day, ex, display_name, pres) for pres in ex.prescribed)
 
     if not rows:
         rows.append(

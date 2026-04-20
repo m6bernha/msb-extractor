@@ -37,10 +37,11 @@ def parse_capture(data: dict[str, Any] | Capture) -> ParseResult:
             days=parse_api_months(capture.api_months),
             captured_at=capture.captured_at,
             source=capture.source,
+            api_probes=capture.api_probes,
         )
 
     calendar_days: dict[date_type, TrainingDay] = {}
-    for _month, html in capture.calendars.items():
+    for html in capture.calendars.values():
         for cal_day in parse_calendar_html(html):
             # Last writer wins per date in case of duplicates.
             calendar_days[cal_day.date] = cal_day

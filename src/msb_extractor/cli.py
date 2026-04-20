@@ -158,6 +158,18 @@ def info(
     table.add_row("Total sets", str(result.total_sets))
     table.add_row("Unique exercises", str(len(result.exercise_names)))
 
+    if result.api_probes:
+        table.add_row("", "")
+        table.add_row("API probes captured", str(len(result.api_probes)))
+        for name, probe in result.api_probes.items():
+            if isinstance(probe, dict):
+                status = probe.get("status")
+                ok = probe.get("ok")
+                marker = "ok" if ok else f"fail ({probe.get('error') or status})"
+                table.add_row(f"  {name}", f"HTTP {status} - {marker}")
+            else:
+                table.add_row(f"  {name}", "(raw)")
+
     _console.print(table)
 
 
