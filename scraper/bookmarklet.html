@@ -782,14 +782,40 @@
   // ------------------------------------------------------------------
   // Preflight
   // ------------------------------------------------------------------
+  //
+  // A bare `TypeError: Failed to fetch` from the browser tells you almost
+  // nothing — it is the same exception for a DNS failure, a same-origin
+  // request running from an isolated JS context, a blocked extension call,
+  // and a hard-dropped connection. The diagnostic variant below collects a
+  // few cheap signals (page origin, navigator.cookieEnabled, HEAD of `/`)
+  // so the caller gets a concrete next step instead of an opaque string.
+
+  function describeEnv() {
+    var env = {
+      origin: 'unknown', href: 'unknown', cookieEnabled: null, ua: 'unknown'
+    };
+    try { env.origin = document.location.origin; } catch (_) {}
+    try { env.href = document.location.href; } catch (_) {}
+    try { env.cookieEnabled = navigator.cookieEnabled; } catch (_) {}
+    try { env.ua = (navigator.userAgent || '').slice(0, 80); } catch (_) {}
+    return env;
+  }
+
+  async function diagnosticFetch(url) {
+    try {
+      var res = await fetch(url, { credentials: 'include' });
+      return { ok: true, status: res.status, type: res.type, redirected: res.redirected };
+    } catch (err) {
+      return { ok: false, error: err && err.message, name: err && err.name };
+    }
+  }
+
   async function preflight() {
     progress.phase = 'preflight';
     var currentMonth = toMonthKey(new Date());
     var url = CALENDAR_PATH + '?month=' + currentMonth;
     try {
       var html = await fetchText(url);
-      // Crude auth check: if we got bounced to a login page the response
-      // body will mention the login form and will not mention the dashboard.
       var lower = html.toLowerCase();
       var looksAuthed = lower.indexOf('dashboard') !== -1 ||
         lower.indexOf('calendar') !== -1 ||
@@ -798,10 +824,54 @@
       if (looksLogin) { throw new Error('session_expired'); }
       logEvent('preflight_ok', {});
     } catch (err) {
-      logEvent('preflight_fail', { error: err && err.message });
+      // Enrich the failure with enough context that the caller can
+      // distinguish environment problems from auth problems.
+      var env = describeEnv();
+      var rootProbe = await diagnosticFetch('/');
+      logEvent('preflight_fail', {
+        error: err && err.message,
+        name: err && err.name,
+        targetUrl: url,
+        pageOrigin: env.origin,
+        pageHref: env.href,
+        cookieEnabled: env.cookieEnabled,
+        ua: env.ua,
+        rootProbe: rootProbe,
+        hint: pickPreflightHint(err, env, rootProbe)
+      });
       throw err;
     }
   }
+
+  function pickPreflightHint(err, env, rootProbe) {
+    var msg = (err && err.message) || '';
+    // Same-origin GET that fails like this usually means the script is
+    // evaluating in an isolated world whose origin differs from the tab.
+    if (msg.indexOf('Failed to fetch') !== -1 || (err && err.name === 'TypeError')) {
+      if (env.origin && env.origin.indexOf('mystrengthbook') === -1) {
+        return 'script is running in an isolated context (' + env.origin + '); paste into DevTools console instead of eval-ing via browser automation';
+      }
+      if (rootProbe && rootProbe.ok === false) {
+        return 'network/extension blocking fetch — try disabling tracking-protection extensions for app.mystrengthbook.com';
+      }
+      return 'same-origin fetch blocked; likely CSP or extension interference. Reload the tab and paste the script directly into DevTools console.';
+    }
+    if (msg === 'session_expired') {
+      return 'log in at https://app.mystrengthbook.com and retry';
+    }
+    if (/HTTP 5\d\d/.test(msg)) { return 'MSB server returned 5xx — usually transient, retry in a minute'; }
+    if (/HTTP 4\d\d/.test(msg)) { return 'MSB returned 4xx — session may be expired or endpoint moved'; }
+    return null;
+  }
+
+  // Lightweight tester for debugging from the console. Not called by run().
+  window._msbTestFetch = async function () {
+    var env = describeEnv();
+    var root = await diagnosticFetch('/');
+    var currentMonth = toMonthKey(new Date());
+    var cal = await diagnosticFetch(CALENDAR_PATH + '?month=' + currentMonth);
+    return { env: env, root: root, calendar: cal };
+  };
 
   // ------------------------------------------------------------------
   // Calendar + day phases
