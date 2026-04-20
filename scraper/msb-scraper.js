@@ -72,9 +72,19 @@
       'exercise-set-comment',
       'exercise-set-note',
       'edit-set-description',
+      'edit-set-comment',
+      'edit-set-note',
       'set-description',
       'set-comment',
-      'set-note'
+      'set-note',
+      'exercise-comment',
+      'exercise-description',
+      'exercise-note',
+      'description',
+      'comment',
+      'note',
+      'edit-description',
+      'edit-comment'
     ],
     probeConcurrency: 5,
     probeTimeoutMs: 5000,
@@ -90,6 +100,14 @@
     // Observability.
     heartbeatMs: 15000,
     showWidget: true,
+
+    // Resume. If a prior run crashed, landed partial data, or was aborted,
+    // its calendars and captured days are stashed in IndexedDB keyed by
+    // (startMonth, endMonth). On the next run with the same range the
+    // scraper skips anything it already has. Disable with
+    // resumeFromCheckpoint: false.
+    resumeFromCheckpoint: true,
+    checkpointFlushEveryDays: 10,
 
     downloadFilename: 'msb_capture.json',
     partialFilename: 'msb_capture_partial.json'
@@ -148,6 +166,47 @@
   window._msbDownload = function (filename) {
     return triggerDownload(output, filename || CONFIG.downloadFilename);
   };
+
+  // Diagnostic dump — a single JSON-serialisable snapshot that automation
+  // (Claude Chrome, custom tooling, a bug-report template) can pipe out of
+  // the tab without scraping the console. Caps the event list so the
+  // returned blob stays small.
+  window._msbDiagnose = function (eventTailCount) {
+    var tail = Math.max(0, Math.min(eventTailCount || 40, events.length));
+    var tailStart = Math.max(0, events.length - tail);
+    return {
+      version: 3,
+      now: Date.now(),
+      running: !!window._msbRunning,
+      aborted: aborted,
+      progress: progress,
+      config: summariseConfig(CONFIG),
+      eventsTotal: events.length,
+      recentEvents: events.slice(tailStart),
+      outputStats: {
+        calendars: Object.keys(output.calendars || {}).length,
+        days: Object.keys(output.days || {}).length,
+        capturedAtMs: output.capturedAtMs
+      },
+      checkpoint: checkpointMeta()
+    };
+  };
+
+  function summariseConfig(c) {
+    // Strip anything large or function-valued; keep knobs users care about.
+    var keep = [
+      'startMonth', 'endMonth',
+      'monthConcurrency', 'dayConcurrency', 'expandConcurrency', 'probeConcurrency',
+      'expandComments', 'probeComments', 'showWidget', 'heartbeatMs',
+      'retryCount', 'expandTimeoutMs', 'probeTimeoutMs',
+      'resumeFromCheckpoint'
+    ];
+    var out = {};
+    for (var i = 0; i < keep.length; i++) {
+      if (c[keep[i]] !== undefined) { out[keep[i]] = c[keep[i]]; }
+    }
+    return out;
+  }
 
   // ------------------------------------------------------------------
   // Logging + widget + heartbeat
@@ -333,6 +392,17 @@
     };
   }
 
+  // Best-effort month for a YYYY-MM-DD date when resumed from checkpoint.
+  // We prefer a month that is actually in the target range so the iframe
+  // fallback can compose the correct day URL if it has to re-render.
+  function _monthForDate(dateStr, months) {
+    var prefix = dateStr.slice(0, 7);
+    for (var i = 0; i < months.length; i++) {
+      if (months[i] === prefix) { return months[i]; }
+    }
+    return prefix;
+  }
+
   async function fetchText(url, opts) {
     opts = opts || {};
     var res = await fetch(url, { credentials: 'include' });
@@ -386,6 +456,169 @@
     }
     return null;
   }
+
+  // ------------------------------------------------------------------
+  // Checkpoint (IndexedDB)
+  // ------------------------------------------------------------------
+  //
+  // We stash the in-flight output in IndexedDB so a crashed tab, an Abort,
+  // or a mid-run refresh does not throw away every fetched page. Keyed by
+  // the (startMonth, endMonth) range so a user running multiple captures
+  // in the same browser does not clobber each other's state. localStorage
+  // is not big enough — a full capture is ~15-25 MB — IndexedDB has no
+  // practical ceiling for this use case.
+
+  var DB_NAME = 'msb_extractor';
+  var DB_VERSION = 1;
+  var DB_STORE = 'captures';
+  var _dbPromise = null;
+  var _checkpointKey = null;
+  var _checkpointState = null;
+
+  function openDb() {
+    if (_dbPromise) { return _dbPromise; }
+    if (typeof indexedDB === 'undefined') {
+      _dbPromise = Promise.resolve(null);
+      return _dbPromise;
+    }
+    _dbPromise = new Promise(function (resolve) {
+      try {
+        var req = indexedDB.open(DB_NAME, DB_VERSION);
+        req.onupgradeneeded = function () {
+          var db = req.result;
+          if (!db.objectStoreNames.contains(DB_STORE)) {
+            db.createObjectStore(DB_STORE, { keyPath: 'id' });
+          }
+        };
+        req.onsuccess = function () { resolve(req.result); };
+        req.onerror = function () { resolve(null); };
+      } catch (_) { resolve(null); }
+    });
+    return _dbPromise;
+  }
+
+  async function checkpointRead(key) {
+    var db = await openDb();
+    if (!db) { return null; }
+    return new Promise(function (resolve) {
+      try {
+        var tx = db.transaction(DB_STORE, 'readonly');
+        var req = tx.objectStore(DB_STORE).get(key);
+        req.onsuccess = function () { resolve(req.result || null); };
+        req.onerror = function () { resolve(null); };
+      } catch (_) { resolve(null); }
+    });
+  }
+
+  async function checkpointWrite(key, payload) {
+    var db = await openDb();
+    if (!db) { return false; }
+    return new Promise(function (resolve) {
+      try {
+        var tx = db.transaction(DB_STORE, 'readwrite');
+        tx.objectStore(DB_STORE).put(Object.assign({ id: key }, payload));
+        tx.oncomplete = function () { resolve(true); };
+        tx.onerror = function () { resolve(false); };
+      } catch (_) { resolve(false); }
+    });
+  }
+
+  async function checkpointDelete(key) {
+    var db = await openDb();
+    if (!db) { return; }
+    return new Promise(function (resolve) {
+      try {
+        var tx = db.transaction(DB_STORE, 'readwrite');
+        tx.objectStore(DB_STORE).delete(key);
+        tx.oncomplete = function () { resolve(); };
+        tx.onerror = function () { resolve(); };
+      } catch (_) { resolve(); }
+    });
+  }
+
+  function checkpointKeyFor(range) {
+    return 'v3:' + range.start + ':' + range.end;
+  }
+
+  function checkpointMeta() {
+    if (!_checkpointState) { return null; }
+    return {
+      key: _checkpointKey,
+      loadedAt: _checkpointState.loadedAt || null,
+      previouslyCalendars: _checkpointState.previouslyCalendars || 0,
+      previouslyDays: _checkpointState.previouslyDays || 0,
+      previouslyExpanded: _checkpointState.previouslyExpanded || 0,
+      lastFlushAt: _checkpointState.lastFlushAt || null
+    };
+  }
+
+  async function maybeResumeFromCheckpoint(range) {
+    if (!CONFIG.resumeFromCheckpoint) {
+      _checkpointKey = checkpointKeyFor(range);
+      _checkpointState = { loadedAt: null, previouslyCalendars: 0, previouslyDays: 0, previouslyExpanded: 0 };
+      return;
+    }
+    _checkpointKey = checkpointKeyFor(range);
+    var saved = await checkpointRead(_checkpointKey);
+    _checkpointState = { loadedAt: null, previouslyCalendars: 0, previouslyDays: 0, previouslyExpanded: 0 };
+    if (!saved || !saved.calendars || !saved.days) { return; }
+    // Hydrate output with what was saved.
+    output.calendars = saved.calendars || {};
+    output.days = saved.days || {};
+    _checkpointState.loadedAt = saved.savedAt || Date.now();
+    _checkpointState.previouslyCalendars = Object.keys(output.calendars).length;
+    _checkpointState.previouslyDays = Object.keys(output.days).length;
+    if (saved.expansion) {
+      progress.expansion.enriched = saved.expansion.enriched || 0;
+      progress.expansion.processed = saved.expansion.processed || 0;
+      progress.expansion.strategy = saved.expansion.strategy || 'none';
+      _checkpointState.previouslyExpanded = progress.expansion.enriched;
+    }
+    logEvent('checkpoint_loaded', {
+      calendars: _checkpointState.previouslyCalendars,
+      days: _checkpointState.previouslyDays,
+      expanded: _checkpointState.previouslyExpanded,
+      ageMs: saved.savedAt ? (Date.now() - saved.savedAt) : null
+    });
+  }
+
+  async function flushCheckpoint() {
+    if (!_checkpointKey) { return; }
+    var payload = {
+      savedAt: Date.now(),
+      schemaVersion: SCHEMA_VERSION,
+      range: { start: CONFIG.startMonth || null, end: CONFIG.endMonth || null },
+      calendars: output.calendars,
+      days: output.days,
+      expansion: {
+        strategy: progress.expansion.strategy,
+        enriched: progress.expansion.enriched,
+        processed: progress.expansion.processed
+      }
+    };
+    var ok = await checkpointWrite(_checkpointKey, payload);
+    if (ok) {
+      _checkpointState.lastFlushAt = payload.savedAt;
+    }
+  }
+
+  window._msbClearCheckpoint = async function () {
+    if (!_checkpointKey) {
+      // Clear all v3 keys as a safety net.
+      var db = await openDb();
+      if (!db) { return false; }
+      return new Promise(function (resolve) {
+        try {
+          var tx = db.transaction(DB_STORE, 'readwrite');
+          tx.objectStore(DB_STORE).clear();
+          tx.oncomplete = function () { resolve(true); };
+          tx.onerror = function () { resolve(false); };
+        } catch (_) { resolve(false); }
+      });
+    }
+    await checkpointDelete(_checkpointKey);
+    return true;
+  };
 
   // ------------------------------------------------------------------
   // Preflight
@@ -590,20 +823,30 @@
   }
 
   // Discover MSB's comment modal endpoint. Returns the winning modal-type
-  // string, or null if no candidate worked.
+  // string, or null if no candidate worked. Probes every candidate in
+  // parallel so the whole discovery phase is bounded by the single
+  // slowest fetch (~probeTimeoutMs) rather than the sum of all fetches.
   async function discoverCommentEndpoint(capturedMap) {
     var sample = pickProbeCandidate(capturedMap);
     if (!sample) { return null; }
     logEvent('probe_start', { candidates: CONFIG.probeCommentCandidates.length });
-    for (var i = 0; i < CONFIG.probeCommentCandidates.length; i++) {
-      if (aborted) { return null; }
-      var cand = CONFIG.probeCommentCandidates[i];
-      var body = await fetchCommentModal(cand, sample.locator.exerciseId, sample.locator.setIndex, sample.date);
-      if (!body) { continue; }
-      var full = extractFullCommentFromModalHtml(body, sample.locator.preview);
-      if (full) {
-        logEvent('probe_hit', { modalType: cand });
-        return cand;
+
+    var attempts = CONFIG.probeCommentCandidates.map(function (cand) {
+      return fetchCommentModal(cand, sample.locator.exerciseId, sample.locator.setIndex, sample.date)
+        .then(function (body) {
+          if (!body) { return null; }
+          var full = extractFullCommentFromModalHtml(body, sample.locator.preview);
+          return full ? cand : null;
+        })
+        .catch(function () { return null; });
+    });
+
+    var results = await Promise.all(attempts);
+    // Honour the user's candidate ordering: take the first winner.
+    for (var i = 0; i < results.length; i++) {
+      if (results[i]) {
+        logEvent('probe_hit', { modalType: results[i] });
+        return results[i];
       }
     }
     logEvent('probe_miss', {});
@@ -881,14 +1124,21 @@
     try {
       await preflight();
 
-      // Calendars (parallel).
+      // Resume from checkpoint if one is present for this (start, end) range.
+      await maybeResumeFromCheckpoint(range);
+      progress.calendars.fetched = Object.keys(output.calendars).length;
+
+      // Calendars (parallel). Skip any we already have from a checkpoint.
       progress.phase = 'calendars';
-      await runPool(months, CONFIG.monthConcurrency, async function (month) {
+      var monthsToFetch = months.filter(function (m) { return !output.calendars[m]; });
+      await runPool(monthsToFetch, CONFIG.monthConcurrency, async function (month) {
         await fetchCalendarForMonth(month);
       });
       if (aborted) { throw new Error('aborted'); }
+      await flushCheckpoint();
 
-      // Days (parallel).
+      // Days (parallel). Any day already present in output.days from a
+      // resumed checkpoint is skipped; we only fetch the missing ones.
       progress.phase = 'days';
       var allDays = [];
       for (var i = 0; i < months.length; i++) {
@@ -903,18 +1153,36 @@
       progress.days.total = allDays.length;
 
       var capturedMap = {};
+      // Pre-seed capturedMap from checkpointed days so the expansion phase
+      // sees the enriched HTML and does not re-expand already-enriched days.
+      var seededDates = Object.keys(output.days);
+      for (var s = 0; s < seededDates.length; s++) {
+        var sd = seededDates[s];
+        capturedMap[sd] = { html: output.days[sd], month: _monthForDate(sd, months) };
+        progress.days.fetched++;
+        progress.days.captured++;
+      }
+      var daysSinceFlush = 0;
       await runPool(allDays, CONFIG.dayConcurrency, async function (d) {
+        if (capturedMap[d.date]) { return; }  // already have it from checkpoint
         var html = await fetchDayDetail(d.date, d.month);
         if (html) {
           capturedMap[d.date] = { html: html, month: d.month };
+          output.days[d.date] = html;
           progress.days.fetched++;
           progress.days.captured++;
           progress.current.date = d.date;
           logEvent('day_ok', { date: d.date });
+          daysSinceFlush++;
+          if (daysSinceFlush >= CONFIG.checkpointFlushEveryDays) {
+            daysSinceFlush = 0;
+            await flushCheckpoint();
+          }
         }
         if (CONFIG.dayDelayMs > 0) { await sleep(CONFIG.dayDelayMs).catch(function () {}); }
       });
       if (aborted) { throw new Error('aborted'); }
+      await flushCheckpoint();
 
       // Expansion.
       if (CONFIG.expandComments) {
@@ -931,16 +1199,21 @@
         }
       }
 
-      // Assemble output.days from capturedMap.
+      // Assemble output.days from capturedMap (already done incrementally,
+      // but a final pass catches anything the expansion phase rewrote).
       var capturedDates = Object.keys(capturedMap);
       for (var c = 0; c < capturedDates.length; c++) {
         output.days[capturedDates[c]] = capturedMap[capturedDates[c]].html;
       }
+      await flushCheckpoint();
 
       // Download.
       progress.phase = 'download';
       var ok = triggerDownload(output, CONFIG.downloadFilename);
       logEvent(ok ? 'download_ok' : 'download_blocked', { filename: CONFIG.downloadFilename });
+      // Clear checkpoint once we have a clean final download so the next
+      // run does not needlessly resume a done capture.
+      try { await checkpointDelete(_checkpointKey); } catch (_) {}
       progress.phase = 'done';
       progress.elapsedMs = Date.now() - progress.startedAt;
       recomputeEta();
@@ -954,14 +1227,15 @@
       if (err && err.message === 'aborted') {
         progress.aborted = true;
         progress.phase = 'aborted';
-        // Try to persist what we have.
-        // Still assemble captured days first.
+        // Persist what we have to both the checkpoint and a partial
+        // download, so the user can resume or hand off the JSON.
         try {
           if (typeof capturedMap !== 'undefined') {
             var dk = Object.keys(capturedMap);
             for (var q = 0; q < dk.length; q++) { output.days[dk[q]] = capturedMap[dk[q]].html; }
           }
         } catch (_) {}
+        try { await flushCheckpoint(); } catch (_) {}
         triggerDownload(output, CONFIG.partialFilename);
         logEvent('download_ok', { filename: CONFIG.partialFilename });
       } else {
