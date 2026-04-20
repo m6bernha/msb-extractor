@@ -149,6 +149,9 @@ msb-extractor --version
 msb-extractor --help
 ```
 
+For stitching an initial capture together with follow-up gap-fill runs, see
+[`tools/merge_captures.py`](tools/merge_captures.py) — `python -m tools.merge_captures a.json b.json -o merged.json`.
+
 ## Configuration
 
 ### Units
