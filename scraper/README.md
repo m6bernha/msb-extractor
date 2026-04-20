@@ -10,6 +10,14 @@ script only runs when you tell your own browser to run it.
 
 ## What gets captured
 
+> **v4 (schemaVersion 4) shipped 2026-04-20.** The scraper now captures
+> MSB's JSON API at `app-us.mystrengthbook.com/api/v1/exercise` directly
+> rather than scraping HTML. A full 24-month capture finishes in **under
+> a minute** instead of hours, and per-set comments arrive complete with
+> no truncation workaround. Auth is auto-discovered by intercepting one
+> live MSB call at startup. v1-v3 captures still parse; see schema notes
+> below.
+
 One file, `msb_capture.json`, with this shape:
 
 ```json

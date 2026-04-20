@@ -13,6 +13,7 @@ from __future__ import annotations
 from datetime import date as date_type
 from datetime import datetime
 from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -95,7 +96,13 @@ class TrainingDay(BaseModel):
 
 
 class Capture(BaseModel):
-    """The top-level JSON payload the browser scraper produces."""
+    """The top-level JSON payload the browser scraper produces.
+
+    schemaVersion 1-3 populate ``calendars`` and ``days`` with raw HTML
+    blobs. schemaVersion 4 populates ``api_months`` with per-month JSON
+    responses from MSB's ``/api/v1/exercise`` endpoint. Both paths
+    downstream-parse into the same ``ParseResult``.
+    """
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
@@ -104,6 +111,7 @@ class Capture(BaseModel):
     source: str = "app.mystrengthbook.com"
     calendars: dict[str, str] = Field(default_factory=dict)
     days: dict[str, str] = Field(default_factory=dict)
+    api_months: dict[str, Any] = Field(default_factory=dict, alias="apiMonths")
 
 
 class ParseResult(BaseModel):

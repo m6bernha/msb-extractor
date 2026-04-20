@@ -16,6 +16,30 @@ capture script at [scraper/msb-scraper.js](../../scraper/msb-scraper.js).
 > **14** (textarea/innermost-text extractor for the modal response).
 > Remaining items are tracked below.
 
+## What shipped in v4 (2026-04-20)
+
+- Ground-up rewrite around MSB's JSON API at
+  `app-us.mystrengthbook.com/api/v1/exercise`. A single request per
+  month returns every exercise, set, load, RPE, and full comment text.
+- Auth token auto-discovery via fetch/XHR interception at startup.
+  Falls back to `CONFIG.authToken` if the live call doesn't fire.
+- Runtime target achieved: **<1 minute for 24 months**, down from 3+
+  hours in v3. No HTML parsing, no iframe hydration, no comment-modal
+  clicking, no probe guessing.
+- Schema bumped to 4: top-level `apiMonths: {YYYY-MM: [exercises]}`.
+- Python parser grew a v4 path (`parser/api.py`) that reads the JSON
+  directly. v1-v3 HTML captures continue to parse unchanged.
+
+Known unknowns (carry forward):
+
+- The exact field names MSB's API uses inside each exercise and each
+  set are inferred from the SPA's request URL. The parser is defensive
+  (`_first_of('actualReps', 'performedReps', 'reps', …)`) but some
+  assumptions may need correction after the first real capture —
+  especially around the `sets` array. Synthetic fixtures in
+  `tests/test_parser_api.py` reflect current guesses; if the real
+  shape differs, update the `_first_of` lists rather than rewriting.
+
 ## What shipped in v3
 
 - Parallel calendar fetches (`monthConcurrency: 3`).

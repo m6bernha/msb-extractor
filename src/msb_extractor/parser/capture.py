@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from msb_extractor.models import Capture, DataSource, ParseResult, TrainingDay
+from msb_extractor.parser.api import parse_api_months
 from msb_extractor.parser.calendar import parse_calendar_html
 from msb_extractor.parser.day_detail import parse_day_detail_html
 
@@ -28,6 +29,15 @@ def parse_capture(data: dict[str, Any] | Capture) -> ParseResult:
     (prescription) level of detail.
     """
     capture = data if isinstance(data, Capture) else Capture.model_validate(data)
+
+    # v4 captures ship API JSON instead of raw HTML. Route them through the
+    # API parser and return early — there's no HTML to merge.
+    if capture.api_months:
+        return ParseResult(
+            days=parse_api_months(capture.api_months),
+            captured_at=capture.captured_at,
+            source=capture.source,
+        )
 
     calendar_days: dict[date_type, TrainingDay] = {}
     for _month, html in capture.calendars.items():

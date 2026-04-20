@@ -61,3 +61,4 @@ out/
 # Commercial reference spreadsheets live locally only, never in the public repo.
 # Anchored to the repo root so docs/examples/ (our own demo) stays tracked.
 /examples/
+.claude/
