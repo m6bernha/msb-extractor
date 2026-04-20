@@ -6,17 +6,37 @@ This module converts that raw JSON into the same ``TrainingDay`` / ``Exercise``
 / ``ActualSet`` shape the HTML parser produces, so exporters downstream do
 not need to know which capture path was used.
 
-The exact field names inside each exercise and each set are not yet
-documented by MSB, so the parser is defensive: it accepts several
-common names for the same logical field (``load`` vs ``weight``,
-``actualReps`` vs ``reps``, ``notes`` vs ``comment`` vs ``description``).
-If a real capture reveals a field name we do not handle, add it to the
-candidate list in the corresponding ``_first_of`` call rather than
-rewriting the shape.
+MSB response shape (verified against a real capture, April 2026):
+
+    exercise = {
+      _id, primary, secondary, customName, order, utcDate, date, notes,
+      sets: [
+        {
+          sets: 3, reps: 12, rpe: 7, load: 40.0, percentRepMax: 0,   # prescription
+          zone: "deload", equipped: false, repsLower: 10,
+          outcomes: {                                                # performed
+            "0": {status: "completed", outcome: {reps, load, rpe, e1rm, sets}},
+            "1": {status: "completed", outcome: {...}},
+            ...
+          },
+          comments: {"0": "free-text comment for set 0", ...},       # per-outcome
+          videos: {...}
+        }, ...
+      ]
+    }
+
+One entry in ``sets[]`` is a *prescription group* ("do 3 sets of 12 @ 40 kg").
+Each key in that entry's ``outcomes`` dict is one actually-performed set.
+Comments are keyed by the same outcome index. The parser therefore emits
+one ``ActualSet`` per outcome, not one per entry.
+
+The ``_first_of`` helper still accepts synonyms so mildly different shapes
+on other endpoints don't immediately break parsing.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import date as date_type
 from datetime import datetime
 from typing import Any
@@ -109,15 +129,18 @@ def _parse_exercise(item: dict[str, Any]) -> Exercise | None:
 
     prescribed: list[PrescribedSet] = []
     actuals: list[ActualSet] = []
-    for i, s in enumerate(sets_list):
-        if not isinstance(s, dict):
+    set_counter = 0
+    for entry in sets_list:
+        if not isinstance(entry, dict):
             continue
-        p = _parse_prescribed_set(s)
+        p = _parse_prescribed_set(entry)
         if p is not None:
             prescribed.append(p)
-        a = _parse_actual_set(s, i)
-        if a is not None:
-            actuals.append(a)
+        for outcome_key, outcome in _iter_outcomes(entry):
+            set_counter += 1
+            a = _parse_actual_from_outcome(entry, outcome, outcome_key, set_counter)
+            if a is not None:
+                actuals.append(a)
 
     return Exercise(
         order=order_letter,
@@ -158,48 +181,101 @@ def _first_of(d: dict[str, Any], *keys: str) -> Any:
 
 def _parse_prescribed_set(s: dict[str, Any]) -> PrescribedSet | None:
     reps = _int_or_none(_first_of(s, "repsPrescribed", "prescribedReps", "targetReps", "reps"))
+    reps_lower = _int_or_none(s.get("repsLower"))
     rpe = _float_or_none(_first_of(s, "rpePrescribed", "prescribedRpe", "targetRpe", "rpe"))
     load = _float_or_none(
         _first_of(s, "loadPrescribed", "prescribedLoad", "targetLoad", "load", "weight")
     )
-    pct = _float_or_none(_first_of(s, "percentage", "percent", "percent1rm", "percentageOf1rm"))
+    pct = _float_or_none(
+        _first_of(s, "percentRepMax", "percentage", "percent", "percent1rm", "percentageOf1rm")
+    )
     if pct is not None and pct > 1.5:
         pct = pct / 100.0
-    if reps is None and rpe is None and load is None and pct is None:
+    sets_count = _int_or_none(s.get("sets"))
+    reps_text: str | None = None
+    if reps_lower is not None and reps is not None and reps_lower != reps:
+        lower, upper = sorted((reps_lower, reps))
+        reps_text = f"{lower}-{upper}"
+    if reps is None and rpe is None and load is None and pct is None and not sets_count:
         return None
     return PrescribedSet(
+        sets=sets_count,
         reps=reps,
+        reps_text=reps_text,
         rpe=rpe,
         percent_1rm=pct,
         load_kg=load,
         load_display=f"{load} kg" if load is not None else None,
-        target_text=_describe_prescribed(reps, rpe, load, pct),
+        target_text=_describe_prescribed(reps, rpe, load, pct, sets_count, reps_text),
         status=SetStatus.PRESCRIBED,
     )
 
 
 def _describe_prescribed(
-    reps: int | None, rpe: float | None, load: float | None, pct: float | None
+    reps: int | None,
+    rpe: float | None,
+    load: float | None,
+    pct: float | None,
+    sets: int | None = None,
+    reps_text: str | None = None,
 ) -> str:
     parts: list[str] = []
-    if reps is not None:
-        parts.append(f"{reps} reps")
-    if load is not None:
+    rep_part = reps_text or (str(reps) if reps is not None else None)
+    if sets and sets > 1 and rep_part:
+        parts.append(f"{sets}x{rep_part}")
+    elif rep_part:
+        parts.append(f"{rep_part} reps")
+    if load is not None and load > 0:
         parts.append(f"@ {load} kg")
-    elif pct is not None:
+    elif pct is not None and pct > 0:
         parts.append(f"@ {round(pct * 100)}%")
     if rpe is not None:
         parts.append(f"RPE {rpe:g}")
     return " ".join(parts)
 
 
-def _parse_actual_set(s: dict[str, Any], index: int) -> ActualSet | None:
+def _iter_outcomes(entry: dict[str, Any]) -> Iterator[tuple[str, dict[str, Any]]]:
+    """Yield ``(key, outcome_dict)`` in ascending numeric-key order.
+
+    MSB ships outcomes as ``{"0": {...}, "1": {...}}`` (a dict keyed by a
+    stringified integer). Older/alternate shapes may use a list; handle
+    both without changing call-sites.
+    """
+    raw = entry.get("outcomes")
+    if isinstance(raw, dict):
+        pairs: list[tuple[int, str, dict[str, Any]]] = []
+        for k, v in raw.items():
+            if not isinstance(v, dict):
+                continue
+            try:
+                order_key = int(str(k))
+            except (TypeError, ValueError):
+                order_key = 0
+            pairs.append((order_key, str(k), v))
+        pairs.sort()
+        for _, key, val in pairs:
+            yield key, val
+    elif isinstance(raw, list):
+        for i, v in enumerate(raw):
+            if isinstance(v, dict):
+                yield str(i), v
+
+
+def _parse_actual_from_outcome(
+    entry: dict[str, Any],
+    outcome: dict[str, Any],
+    outcome_key: str,
+    set_number: int,
+) -> ActualSet | None:
+    inner_raw = outcome.get("outcome")
+    inner: dict[str, Any] = inner_raw if isinstance(inner_raw, dict) else outcome
+
     reps = _int_or_none(
-        _first_of(s, "actualReps", "performedReps", "completedReps", "repsDone", "reps")
+        _first_of(inner, "actualReps", "performedReps", "completedReps", "repsDone", "reps")
     )
     load = _float_or_none(
         _first_of(
-            s,
+            inner,
             "actualLoad",
             "performedLoad",
             "actualWeight",
@@ -209,26 +285,20 @@ def _parse_actual_set(s: dict[str, Any], index: int) -> ActualSet | None:
             "weight",
         )
     )
-    rpe = _float_or_none(_first_of(s, "actualRpe", "performedRpe", "rpe"))
-    e1rm = _float_or_none(_first_of(s, "e1rm", "estimated1rm", "estimatedOneRepMax"))
-    pct = _float_or_none(_first_of(s, "percentOfMax", "percentage", "percent", "percent1rm"))
+    rpe = _float_or_none(_first_of(inner, "actualRpe", "performedRpe", "rpe"))
+    e1rm = _float_or_none(_first_of(inner, "e1rm", "estimated1rm", "estimatedOneRepMax"))
+    pct = _float_or_none(
+        _first_of(inner, "percentOfMax", "percentage", "percent", "percent1rm", "percentRepMax")
+    )
     if pct is not None and pct > 1.5:
         pct = pct / 100.0
-    comment = _str_or_none(
-        _first_of(s, "notes", "comment", "description", "lifterNotes", "athleteNotes")
+
+    comment = _comment_for(entry, outcome_key)
+    video = _video_url(
+        inner.get("video") or inner.get("videos") or entry.get("videos") or entry.get("video")
     )
-    video = _video_url(s.get("video") or s.get("videos") or s.get("media"))
+    status = _status_from_outcome(outcome, reps=reps, load=load)
 
-    complete_flag = s.get("complete")
-    if complete_flag is None:
-        complete_flag = s.get("completed")
-    status = SetStatus.UNKNOWN
-    if complete_flag is True:
-        status = SetStatus.COMPLETED
-    elif complete_flag is False and (reps is not None or load is not None):
-        status = SetStatus.PARTIAL
-
-    # Only materialise an actual set if the lifter logged *something* for it.
     if (
         reps is None
         and load is None
@@ -240,7 +310,7 @@ def _parse_actual_set(s: dict[str, Any], index: int) -> ActualSet | None:
         return None
 
     return ActualSet(
-        set_number=index + 1,
+        set_number=set_number,
         reps=reps,
         rpe=rpe,
         load_kg=load,
@@ -253,16 +323,59 @@ def _parse_actual_set(s: dict[str, Any], index: int) -> ActualSet | None:
     )
 
 
+def _comment_for(entry: dict[str, Any], key: str) -> str | None:
+    raw = entry.get("comments")
+    if isinstance(raw, dict):
+        val = raw.get(key)
+        if val is None:
+            try:
+                val = raw.get(int(key))
+            except (TypeError, ValueError):
+                val = None
+        return _str_or_none(val)
+    if isinstance(raw, list):
+        try:
+            idx = int(key)
+        except (TypeError, ValueError):
+            return None
+        if 0 <= idx < len(raw):
+            return _str_or_none(raw[idx])
+    if isinstance(raw, str):
+        return _str_or_none(raw)
+    return None
+
+
+def _status_from_outcome(
+    outcome: dict[str, Any], *, reps: int | None, load: float | None
+) -> SetStatus:
+    raw = str(outcome.get("status") or "").lower()
+    if raw == "completed":
+        return SetStatus.COMPLETED
+    if raw in {"missed", "failed", "skipped"}:
+        return SetStatus.MISSED
+    if raw in {"partial", "incomplete"}:
+        return SetStatus.PARTIAL
+    if reps is not None or load is not None:
+        return SetStatus.COMPLETED
+    return SetStatus.UNKNOWN
+
+
 def _video_url(v: Any) -> str | None:
     if v is None:
         return None
     if isinstance(v, str) and v.strip():
         return v.strip()
     if isinstance(v, dict):
-        for key in ("url", "href", "src", "originalId"):
+        for key in ("url", "href", "src", "originalId", "videoOriginal"):
             val = v.get(key)
             if isinstance(val, str) and val.strip():
                 return val.strip()
+        # MSB nests by outcome index: {"0": {"videoOriginal": "...mp4"}}.
+        for val in v.values():
+            if isinstance(val, dict):
+                nested = _video_url(val)
+                if nested:
+                    return nested
     if isinstance(v, list) and v:
         first = v[0]
         if isinstance(first, str):
