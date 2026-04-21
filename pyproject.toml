@@ -44,6 +44,7 @@ dev = [
 
 [project.scripts]
 msb-extractor = "msb_extractor.cli:app"
+merge-captures = "tools.merge_captures:app"
 
 [project.urls]
 Homepage = "https://github.com/m6bernha/msb-extractor"
@@ -51,7 +52,7 @@ Issues = "https://github.com/m6bernha/msb-extractor/issues"
 Source = "https://github.com/m6bernha/msb-extractor"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/msb_extractor"]
+packages = ["src/msb_extractor", "tools"]
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -116,7 +117,7 @@ python_version = "3.11"
 strict = true
 warn_unreachable = true
 disallow_untyped_defs = true
-files = ["src/msb_extractor"]
+files = ["src/msb_extractor", "tools"]
 
 [[tool.mypy.overrides]]
 module = ["openpyxl.*"]

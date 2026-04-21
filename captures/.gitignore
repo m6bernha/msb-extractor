@@ -1,0 +1,7 @@
+# Anything a user drops into this directory is theirs — never committed.
+# This .gitignore is itself tracked so the directory ships with the repo
+# (git does not track empty folders) and the instructions that reference
+# `captures/msb_capture.json` and `captures/training_log.xlsx` work on
+# first checkout.
+*
+!.gitignore

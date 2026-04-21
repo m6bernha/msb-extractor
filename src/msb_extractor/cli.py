@@ -13,7 +13,7 @@ from msb_extractor import __version__
 from msb_extractor.export import write_xlsx
 from msb_extractor.models import DataSource
 from msb_extractor.normalize.units import Unit
-from msb_extractor.parser.capture import parse_capture_file
+from msb_extractor.parser.capture import CaptureFileError, parse_capture_file
 
 app = typer.Typer(
     name="msb-extractor",
@@ -100,7 +100,11 @@ def parse(
     target = output or input_path.with_suffix(".xlsx")
 
     _console.print(f"Loading [cyan]{input_path}[/cyan]...")
-    result = parse_capture_file(input_path)
+    try:
+        result = parse_capture_file(input_path)
+    except CaptureFileError as exc:
+        _err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=2) from exc
 
     if not result.days:
         _err.print(
@@ -133,7 +137,11 @@ def info(
     ],
 ) -> None:
     """Print a short summary of a capture file without exporting."""
-    result = parse_capture_file(input_path)
+    try:
+        result = parse_capture_file(input_path)
+    except CaptureFileError as exc:
+        _err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=2) from exc
 
     if not result.days:
         _err.print("[yellow]Empty capture: no training days found.[/yellow]")

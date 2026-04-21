@@ -80,6 +80,21 @@ def test_exercise_index_sorted_by_volume(
     assert isinstance(first_exercise_name, str)
 
 
+def test_units_lbs_formats_load_column(
+    tmp_path: Path,
+    capture_json: dict[str, Any],
+) -> None:
+    """--units lbs must convert the kg-stored loads for display."""
+    result = parse_capture(capture_json)
+    out = write_xlsx(result, tmp_path / "lbs.xlsx", unit="lbs")
+    wb = load_workbook(out)
+    ws = wb["Raw Log"]
+    load_cells = [ws.cell(row=r, column=10).value for r in range(2, ws.max_row + 1)]
+    formatted_cells = [str(c) for c in load_cells if c]
+    assert any("lbs" in c for c in formatted_cells), formatted_cells
+    assert not any("kg" in c for c in formatted_cells), formatted_cells
+
+
 def test_rename_map_applied_in_output(
     tmp_path: Path,
     capture_json: dict[str, Any],

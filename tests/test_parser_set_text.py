@@ -47,7 +47,15 @@ def test_bare_percentage_without_parentheses() -> None:
     assert abs(s.percent_1rm - 0.80) < 1e-9
 
 
-def test_lbs_source_populates_display_only() -> None:
+def test_lbs_source_converts_to_kg_and_preserves_display() -> None:
+    """Lbs-origin prescriptions round-trip through kg storage.
+
+    The parser stores the canonical kg value so the --units flag can
+    display either unit, and preserves the original lbs string in
+    ``load_display`` / ``target_text`` for anyone inspecting the raw
+    prescription verbatim.
+    """
     s = parse_set_text("1 x 8 Reps @ 185 lbs")
-    assert s.load_kg is None
+    assert s.load_kg is not None
+    assert abs(s.load_kg - 185 * 0.45359237) < 1e-9
     assert s.load_display == "185.0 lbs"

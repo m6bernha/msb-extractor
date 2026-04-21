@@ -129,6 +129,35 @@ def test_invalid_json_rejected(tmp_path: Path) -> None:
     assert not isinstance(result.exception, json.JSONDecodeError)
 
 
+def test_api_months_and_probes_merge(tmp_path: Path) -> None:
+    """v4 captures populate apiMonths/apiProbes; both must survive a merge."""
+    a = _write(
+        tmp_path / "a.json",
+        _base(
+            schemaVersion=4,
+            apiMonths={"2025-03": [{"_id": "ex1", "utcDate": "20250310"}]},
+            apiProbes={"modified": {"ok": True, "status": 200}},
+        ),
+    )
+    b = _write(
+        tmp_path / "b.json",
+        _base(
+            schemaVersion=4,
+            apiMonths={"2025-04": [{"_id": "ex2", "utcDate": "20250401"}]},
+            apiProbes={"personalRecords": {"ok": True, "status": 200}},
+        ),
+    )
+    out = tmp_path / "merged.json"
+
+    result = runner.invoke(app, [str(a), str(b), "--output", str(out)])
+
+    assert result.exit_code == 0, result.output
+    merged = json.loads(out.read_text(encoding="utf-8"))
+    assert set(merged["apiMonths"]) == {"2025-03", "2025-04"}
+    assert set(merged["apiProbes"]) == {"modified", "personalRecords"}
+    assert merged["apiMonths"]["2025-03"][0]["_id"] == "ex1"
+
+
 def test_merge_captures_pure_function_enrichment() -> None:
     # Unit-level sanity check on the pure merge function: enrichment rule
     # is symmetric — it holds whether the enriched capture is first or last.

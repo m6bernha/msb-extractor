@@ -13,10 +13,38 @@ from msb_extractor.parser.calendar import parse_calendar_html
 from msb_extractor.parser.day_detail import parse_day_detail_html
 
 
+class CaptureFileError(ValueError):
+    """Raised when a capture JSON cannot be loaded or parsed.
+
+    Surfaces a single, user-readable message; the CLI catches this and
+    prints it without a traceback so non-technical users get actionable
+    feedback on the most common first-run failures (missing file, wrong
+    path, file that is not valid JSON).
+    """
+
+
 def parse_capture_file(path: str | Path) -> ParseResult:
-    """Load a ``msb_capture.json`` file and parse it into a ``ParseResult``."""
-    raw = Path(path).read_text(encoding="utf-8")
-    data: Any = json.loads(raw)
+    """Load a ``msb_capture.json`` file and parse it into a ``ParseResult``.
+
+    Raises :class:`CaptureFileError` with a user-facing message on any
+    filesystem or JSON decoding failure. All other exceptions propagate.
+    """
+    p = Path(path)
+    try:
+        raw = p.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise CaptureFileError(f"Capture file not found: {p}") from exc
+    except OSError as exc:
+        raise CaptureFileError(f"Cannot read {p}: {exc.strerror or exc}") from exc
+    try:
+        data: Any = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise CaptureFileError(
+            f"{p.name} is not valid JSON: {exc.msg} "
+            f"(line {exc.lineno}, column {exc.colno}). "
+            f"Did you point at the right file? The scraper writes "
+            f"'msb_capture.json'; a partial download may be truncated."
+        ) from exc
     return parse_capture(data)
 
 
