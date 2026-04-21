@@ -73,7 +73,9 @@
   // can inspect them offline and grow first-class parsers next iteration.
   var PROBES = [
     { name: 'modified', path: '/modified', withDateRange: true },
-    { name: 'workoutNote', path: '/workout-note', withDateRange: true },
+    // workout-note needs an explicit userId param — MSB's server returns
+    // HTTP 400 "A valid user is required" without it (2026-04-21 capture).
+    { name: 'workoutNote', path: '/workout-note', withDateRange: true, withUserId: true },
     { name: 'personalRecords', path: '/personal-records', withDateRange: false }
   ];
 
@@ -525,8 +527,9 @@
   // ------------------------------------------------------------------
   // Probe endpoints (best-effort, non-fatal)
   // ------------------------------------------------------------------
-  function buildProbeUrl(probe, range) {
+  function buildProbeUrl(probe, range, userId) {
     var url = API_BASE + probe.path;
+    var params = [];
     if (probe.withDateRange && range) {
       var gte = range.start.replace('-', '') + '01';
       // resolveRange returns YYYY-MM month keys; use the full bracket of the window.
@@ -535,13 +538,20 @@
       var endM = parseInt(endParts[1], 10);
       var lastDay = new Date(endY, endM, 0).getDate();
       var lte = range.end.replace('-', '') + pad2(lastDay);
-      url += '?utcDate%5B%24gte%5D=' + gte + '&utcDate%5B%24lte%5D=' + lte;
+      params.push('utcDate%5B%24gte%5D=' + gte);
+      params.push('utcDate%5B%24lte%5D=' + lte);
+    }
+    if (probe.withUserId && userId) {
+      params.push('userId=' + encodeURIComponent(userId));
+    }
+    if (params.length > 0) {
+      url += '?' + params.join('&');
     }
     return url;
   }
 
-  async function fetchProbe(probe, token, range) {
-    var url = buildProbeUrl(probe, range);
+  async function fetchProbe(probe, token, range, userId) {
+    var url = buildProbeUrl(probe, range, userId);
     var record = { url: url, ok: false, status: null, contentType: null, body: null, error: null };
     try {
       var res = await fetchWithTimeout(url, {
@@ -571,12 +581,12 @@
     return record;
   }
 
-  async function runProbes(token, range) {
+  async function runProbes(token, range, userId) {
     progress.probes.total = PROBES.length;
     updateWidget();
     var tasks = PROBES.map(function (probe) {
       return (async function () {
-        var rec = await fetchProbe(probe, token, range);
+        var rec = await fetchProbe(probe, token, range, userId);
         output.apiProbes[probe.name] = rec;
         if (rec.ok) {
           progress.probes.fetched++;
@@ -699,7 +709,7 @@
       progress.phase = 'probes';
       updateWidget();
       try {
-        await runProbes(token, range);
+        await runProbes(token, range, userId);
       } catch (probeErr) {
         // Probes are best-effort. Record the failure but let the scrape finish.
         logEvent('probe_fail', { probe: '*', error: (probeErr && probeErr.message) || 'unknown' });
