@@ -115,9 +115,10 @@
     source: 'app.mystrengthbook.com',
     api: {
       base: API_BASE,
+      // userId is kept because MSB echoes it on several endpoints and the
+      // parser tolerates its absence; no token material is persisted.
       userId: null,
-      tokenExpires: null,
-      tokenHash: null
+      tokenExpires: null
     },
     apiMonths: {},
     apiProbes: {},
@@ -550,9 +551,24 @@
     return url;
   }
 
+  function sanitiseProbeUrl(url) {
+    // Store the path + static query params only; strip userId so the
+    // captured JSON never carries the lifter's opaque account id in a
+    // field a co-located page script can read off window._msbData.
+    if (!url) { return url; }
+    return url.replace(/([?&])userId=[^&]*/g, '$1userId=***').replace(/\?$/, '');
+  }
+
   async function fetchProbe(probe, token, range, userId) {
     var url = buildProbeUrl(probe, range, userId);
-    var record = { url: url, ok: false, status: null, contentType: null, body: null, error: null };
+    var record = {
+      url: sanitiseProbeUrl(url),
+      ok: false,
+      status: null,
+      contentType: null,
+      body: null,
+      error: null
+    };
     try {
       var res = await fetchWithTimeout(url, {
         credentials: 'same-origin',
@@ -671,7 +687,6 @@
       var userId = jwt && jwt.payload && jwt.payload.userId;
       output.api.userId = userId || null;
       output.api.tokenExpires = jwt.expires || null;
-      output.api.tokenHash = token.slice(0, 6) + '…' + token.slice(-6);
       logEvent('token_ok', { userId: userId, expires: jwt.expires });
 
       var range = resolveRange();
@@ -689,9 +704,6 @@
           var list = Array.isArray(data) ? data :
             (data && data.docs ? data.docs :
               (data && data.data ? data.data : []));
-          if (!window._msbApiSample && list.length > 0) {
-            window._msbApiSample = list.slice(0, 2);
-          }
           logEvent('api_month', { month: m, exercises: list.length });
           if (CONFIG.monthDelayMs > 0) { await sleep(CONFIG.monthDelayMs); }
           recomputeStats();
@@ -728,6 +740,18 @@
         days: output.stats.trainingDays,
         elapsedMs: progress.elapsedMs
       });
+
+      // The download has already reached disk. Evict the full capture from
+      // the page's global scope so other scripts running in the MSB tab
+      // can't harvest it. Users who want to re-download run the whole
+      // scraper again rather than calling window._msbDownload() on stale
+      // data.
+      if (ok) {
+        try {
+          window._msbData = null;
+          window._msbDownload = null;
+        } catch (_) { /* sealed globals are fine to ignore */ }
+      }
     } catch (err) {
       if (err && err.message === 'aborted') {
         progress.aborted = true;

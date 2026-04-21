@@ -178,9 +178,11 @@
  *
  * Usage: open app.mystrengthbook.com while logged in, open DevTools
  * console, paste this file, press Enter. After a few seconds
- * `msb_capture.json` downloads. The data is also on window._msbData,
- * and window._msbDownload() re-saves if the browser blocks the first
- * download. The companion Python CLI (msb-extractor) consumes it.
+ * `msb_capture.json` downloads. During the run the data is visible on
+ * window._msbData; as soon as the file reaches disk both _msbData and
+ * _msbDownload are cleared so co-located page scripts cannot read the
+ * capture afterwards. The companion Python CLI (msb-extractor) then
+ * consumes the downloaded JSON.
  */
 
 (function () {
@@ -261,8 +263,7 @@
     api: {
       base: API_BASE,
       userId: null,
-      tokenExpires: null,
-      tokenHash: null
+      tokenExpires: null
     },
     apiMonths: {},
     stats: { exercises: 0, sets: 0, trainingDays: 0 }
@@ -730,7 +731,6 @@
       var userId = jwt && jwt.payload && jwt.payload.userId;
       output.api.userId = userId || null;
       output.api.tokenExpires = jwt.expires || null;
-      output.api.tokenHash = token.slice(0, 6) + '…' + token.slice(-6);
       logEvent('token_ok', { userId: userId, expires: jwt.expires });
 
       var range = resolveRange();
@@ -748,9 +748,6 @@
           var list = Array.isArray(data) ? data :
             (data && data.docs ? data.docs :
               (data && data.data ? data.data : []));
-          if (!window._msbApiSample && list.length > 0) {
-            window._msbApiSample = list.slice(0, 2);
-          }
           logEvent('api_month', { month: m, exercises: list.length });
           if (CONFIG.monthDelayMs > 0) { await sleep(CONFIG.monthDelayMs); }
           recomputeStats();
@@ -778,6 +775,16 @@
         days: output.stats.trainingDays,
         elapsedMs: progress.elapsedMs
       });
+
+      // Evict the full capture from the page's global scope after the
+      // download reaches disk, so other scripts running on the MSB tab
+      // can't harvest it via window._msbData.
+      if (ok) {
+        try {
+          window._msbData = null;
+          window._msbDownload = null;
+        } catch (_) { /* sealed globals are fine to ignore */ }
+      }
     } catch (err) {
       if (err && err.message === 'aborted') {
         progress.aborted = true;
