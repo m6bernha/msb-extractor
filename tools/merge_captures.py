@@ -5,15 +5,26 @@ re-runs to fill gaps (a month the scraper missed, a week that needed the
 comment-expansion pass, etc.). The merged output is drop-in compatible
 with ``msb-extractor parse`` — no downstream changes required.
 
+Usage
+-----
+.. code-block:: bash
+
+    python -m tools.merge_captures initial.json gapfill.json -o merged.json
+
+    # or, once installed via pip install -e .:
+    merge-captures initial.json gapfill.json -o merged.json
+
 Merge rules
 -----------
-- ``calendars`` and ``days`` from every input are merged by key.
+- ``calendars``, ``days``, ``apiMonths``, and ``apiProbes`` from every
+  input are merged by key.
 - Generic conflict: later inputs win.
-- Per-day exception: if any input holds an "enriched" day HTML (contains
-  the ``data-full-comment=`` marker the scraper's expansion pass writes)
-  and another holds the same day without it, the enriched version wins
-  regardless of argument order — losing comment detail to a later,
-  shallower re-run would defeat the purpose of merging.
+- Per-day exception (HTML path only): if any input holds an "enriched"
+  day HTML (contains the ``data-full-comment=`` marker the scraper's
+  expansion pass writes) and another holds the same day without it, the
+  enriched version wins regardless of argument order — losing comment
+  detail to a later, shallower re-run would defeat the purpose of
+  merging.
 - ``schemaVersion`` and ``capturedAt`` are the maximum across all inputs.
 - ``source`` is taken from the first input (they should all match).
 """
@@ -23,7 +34,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from pydantic import ValidationError
@@ -52,6 +63,8 @@ class MergeStats:
 
     calendars: int
     days: int
+    api_months: int
+    api_probes: int
     recency_conflicts: int
     enrichment_conflicts: int
 
@@ -67,6 +80,8 @@ def merge_captures(captures: list[Capture]) -> tuple[Capture, MergeStats]:
 
     merged_calendars: dict[str, str] = {}
     merged_days: dict[str, str] = {}
+    merged_api_months: dict[str, Any] = {}
+    merged_api_probes: dict[str, Any] = {}
     recency = 0
     enrichment = 0
 
@@ -92,20 +107,41 @@ def merge_captures(captures: list[Capture]) -> tuple[Capture, MergeStats]:
                 merged_days[key] = html
                 recency += 1
 
+        # v4 API capture payloads: plain last-writer-wins per month key and
+        # per probe name. No enrichment concept here — every API response is
+        # already the authoritative structured form.
+        for month_key, payload in cap.api_months.items():
+            if month_key in merged_api_months:
+                recency += 1
+            merged_api_months[month_key] = payload
+        for probe_name, payload in cap.api_probes.items():
+            if probe_name in merged_api_probes:
+                recency += 1
+            merged_api_probes[probe_name] = payload
+
     schema_version = max(c.schema_version for c in captures)
     captured_times = [c.captured_at for c in captures if c.captured_at is not None]
     captured_at = max(captured_times) if captured_times else None
 
-    merged = Capture(
-        schema_version=schema_version,
-        captured_at=captured_at,
-        source=captures[0].source,
-        calendars=merged_calendars,
-        days=merged_days,
+    # Pydantic's ``populate_by_name=True`` allows snake_case kwargs at
+    # runtime, but mypy's pydantic plugin only sees the declared aliases.
+    # Round-trip through ``model_validate`` to keep both happy.
+    merged = Capture.model_validate(
+        {
+            "schemaVersion": schema_version,
+            "capturedAt": captured_at,
+            "source": captures[0].source,
+            "calendars": merged_calendars,
+            "days": merged_days,
+            "apiMonths": merged_api_months,
+            "apiProbes": merged_api_probes,
+        }
     )
     stats = MergeStats(
         calendars=len(merged_calendars),
         days=len(merged_days),
+        api_months=len(merged_api_months),
+        api_probes=len(merged_api_probes),
         recency_conflicts=recency,
         enrichment_conflicts=enrichment,
     )
@@ -164,7 +200,8 @@ def merge(
 
     _console.print(
         f"Merged {len(captures)} inputs -> "
-        f"{stats.calendars} calendars, {stats.days} days "
+        f"{stats.calendars} calendars, {stats.days} days, "
+        f"{stats.api_months} api months, {stats.api_probes} api probes "
         f"({stats.recency_conflicts} conflicts resolved by recency, "
         f"{stats.enrichment_conflicts} by enrichment)."
     )

@@ -27,6 +27,7 @@ from msb_extractor.models import (
     SetStatus,
     TrainingDay,
 )
+from msb_extractor.normalize.units import lbs_to_kg
 
 _DATE_RE = re.compile(r'id="select-(\d{4}-\d{2}-\d{2})"')
 _SET_TEXT_RE = re.compile(
@@ -162,7 +163,13 @@ def parse_set_text(text: str) -> PrescribedSet:
         load_kg = float(m_kg.group(1))
         load_display = f"{load_kg} kg"
     elif m_lbs := _LOAD_LBS_RE.search(scan_region):
-        load_display = f"{float(m_lbs.group(1))} lbs"
+        # Store the canonical kg value so the --units flag can round-trip the
+        # display to either unit. The original lbs string is preserved in
+        # ``target_text`` (and ``load_display``) for anyone inspecting the
+        # prescription verbatim.
+        lbs_value = float(m_lbs.group(1))
+        load_kg = lbs_to_kg(lbs_value)
+        load_display = f"{lbs_value} lbs"
 
     rpe: float | None = None
     if m_rpe := _RPE_RE.search(scan_region):
