@@ -14,24 +14,29 @@ data lives and who it touches.
                   same-origin
 ```
 
-1. **In the browser.** The scraper issues same-origin `fetch()` calls to
-   `https://app.mystrengthbook.com/dashboard/...`. These are exactly the
-   requests your browser would make if you clicked through the site
-   yourself. Your MSB session cookies go along with them, because they
-   are your cookies in your own tab.
+1. **In the browser.** The scraper issues `fetch()` calls to MSB's own
+   JSON API at `https://app-us.mystrengthbook.com/api/v1/exercise` (plus
+   three exploratory probe endpoints on the same host). These are the
+   exact requests MSB's own front-end makes when you click through the
+   site yourself. The auth JWT the scraper sends is captured from
+   MSB's own live traffic — it is your existing session token, not a
+   credential stored by this tool.
 
 2. **On disk.** The scraper calls `a.click()` on an in-memory Blob URL,
    which triggers the browser's standard "save file" flow. The captured
    JSON lands in your default downloads folder.
 
 3. **In the CLI.** `msb-extractor parse` reads the JSON from disk, parses
-   it with BeautifulSoup and lxml (both pure-Python, offline libraries),
-   and writes an xlsx with openpyxl (also pure-Python, offline).
+   it entirely offline (pydantic for domain models, openpyxl for xlsx
+   output), and writes a spreadsheet. Older v1-v3 captures — which
+   shipped raw HTML — are still supported and use BeautifulSoup + lxml
+   for that fallback path.
 
 At no point does anything in this repo open a network connection to any
-host other than `app.mystrengthbook.com`. There is no analytics
-collector. There is no error reporter. There is no AI back-end. There is
-no auto-update check. There is no bug-report phone-home.
+host other than `app-us.mystrengthbook.com` (and only while the browser
+scraper is running). There is no analytics collector. There is no error
+reporter. There is no AI back-end. There is no auto-update check. There
+is no bug-report phone-home.
 
 ## What data the scraper sees
 
@@ -44,10 +49,16 @@ pages. That is:
 - Your coach's name, if it appears on any of the pages
 - Any other HTML your account happens to render on those pages
 
-The captured JSON contains the **raw HTML** of the pages. That is more
-than the final xlsx exposes. Treat the JSON like you would treat a
-database dump of your own account: keep it somewhere you are comfortable
-keeping training data.
+The captured JSON contains the **full structured training log** that
+MSB's API returned — every set, every comment, every exercise detail,
+untruncated. That is more than the final xlsx exposes (the xlsx focuses
+on the fields most lifters care about). Treat the JSON like a database
+dump of your own account: keep it somewhere you are comfortable keeping
+training data.
+
+v1-v3 captures instead contained raw HTML scraped from the page. Those
+still parse, but the v4 JSON captures are smaller (~1-3 MB vs ~15 MB),
+faster to produce, and more complete.
 
 ## What the scraper deliberately avoids
 

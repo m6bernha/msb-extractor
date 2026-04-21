@@ -61,6 +61,24 @@ Real 24-month capture from a heavy user (192 training days). Findings:
   lesson from the v4 parser fix is **do not guess field names; verify
   against live data first**.
 
+### Probe capture #1 — 2026-04-21 (same user)
+
+Confirmed what the three probes actually return on a logged-in
+session. Nothing here is a parser blocker, but it shapes what the
+next iteration will and won't add.
+
+| Probe | Status | Body | Verdict |
+|---|---|---|---|
+| `modified` | 200 (35 B) | `{"user": "2025-12-06T12:30:43.036Z"}` | Just a last-modified timestamp. Nothing worth parsing; keep capturing in case MSB enriches it. |
+| `workoutNote` | 400 (78 B) | `{"error": {"code": 400, "message": "A valid user is required"}}` | Endpoint needs a `userId=...` query parameter we do not yet send. Cheap scraper fix: append `userId=<api.userId>` to the probe URL. Worth doing once we know a user has day-level notes to validate against. |
+| `personalRecords` | 200 (41 B) | `{"repMaxPR": {}, "volumePR": {}, "e1rmPR": {}}` | Structure confirmed, bodies empty for this user. Need a capture from an account with logged PRs to see populated values before writing a parser. |
+
+**Carry-forward for the next scraper iteration:**
+- Add `userId` query param to the `workoutNote` probe URL (trivial).
+- Defer `personalRecords` parsing until we have a populated capture.
+- Drop `modified` from the probe set entirely — it is metadata, not
+  training data.
+
 ## What shipped in v3
 
 - Parallel calendar fetches (`monthConcurrency: 3`).

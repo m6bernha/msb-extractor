@@ -83,12 +83,48 @@ charts of your estimated 1RM over time for every major lift.
 
 Total time: **~5 minutes**, most of it in the browser. You only do this once.
 
-### Step 1 — Install the tool
+### Step 0 — Do I have Python?
+
+This tool needs **Python 3.11 or newer**. Open a terminal and type:
+
+```bash
+python --version       # Windows / most setups
+python3 --version      # macOS if the above fails
+```
+
+If you see `Python 3.11.x` or higher, you're good. If you see anything
+else — "command not found", "Python was not found", or a version below
+3.11 — install Python first:
+
+- **Windows:** download from [python.org/downloads](https://www.python.org/downloads/).
+  **Tick the checkbox that says "Add Python to PATH"** during install.
+  (Alternative: install "Python 3.11" from the Microsoft Store.) Close
+  and reopen your terminal afterwards, then re-check the version.
+- **macOS:** the easiest path is Homebrew — `brew install python@3.11`.
+  Or download from python.org.
+- **Linux:** `sudo apt install python3.11 python3.11-venv` on
+  Debian/Ubuntu, or use your distro's package manager.
+
+If `python --version` works but `pip --version` doesn't, your Python
+install is broken — reinstall from python.org (make sure pip is
+selected during install).
+
+### Step 1 — Get the tool
 
 ```bash
 git clone https://github.com/m6bernha/msb-extractor.git
 cd msb-extractor
+```
 
+No `git`? Download the repo as a ZIP from
+[the GitHub page](https://github.com/m6bernha/msb-extractor) (green
+"Code" button → "Download ZIP"), unzip it, and `cd` into the unzipped
+folder.
+
+**Install the package** (creates a local Python environment and drops
+the CLI into it):
+
+```bash
 # create an isolated Python environment
 python -m venv .venv
 source .venv/bin/activate                    # macOS / Linux
@@ -99,8 +135,10 @@ source .venv/bin/activate                    # macOS / Linux
 pip install -e .
 ```
 
-Requires Python 3.11 or newer. The tool is not on PyPI yet — installing from
-source is the current path.
+The tool is not on PyPI yet — installing from source is the current
+path. If `.venv\Scripts\activate` fails on Windows PowerShell with
+`running scripts is disabled`, see
+[troubleshooting.md](docs/troubleshooting.md#activating-the-virtual-environment-silently-fails).
 
 ### Step 2 — Capture your training data from MSB
 
@@ -133,6 +171,18 @@ Full troubleshooting lives in [scraper/README.md](scraper/README.md).
 
 ### Step 3 — Turn the capture into a spreadsheet
 
+**Option A (easiest): use the one-click helper.**
+
+- **Windows:** double-click `run.bat` in the repo root.
+- **macOS / Linux:** in a terminal, `bash run.sh`.
+
+The helper creates the Python environment on first run, installs the
+package, parses `captures/msb_capture.json`, and offers to open the
+resulting `captures/training_log.xlsx`. Subsequent runs reuse the
+environment and complete in under a second.
+
+**Option B: run the Python commands yourself.**
+
 From the repo root, with your venv activated:
 
 ```bash
@@ -140,7 +190,7 @@ From the repo root, with your venv activated:
 python -m msb_extractor info captures/msb_capture.json
 
 # produce the xlsx
-python -m msb_extractor parse captures/msb_capture.json -o captures/training.xlsx
+python -m msb_extractor parse captures/msb_capture.json -o captures/training_log.xlsx
 ```
 
 The `info` command prints date range, training-day count, set count, and
@@ -148,11 +198,24 @@ which probe endpoints the scraper captured. The `parse` command writes the
 xlsx and prints a summary like `Parsed 192 training days, 2,484 sets total,
 across 28 exercises.`
 
-### Step 4 — Open the spreadsheet
+### Step 4 — Open and read the spreadsheet
 
-Open `captures/training.xlsx` in Excel, Numbers, LibreOffice, or upload it
-to Google Sheets. See [Output sheets](#output-sheets) below for what each
-tab contains.
+Open `captures/training_log.xlsx` in Excel, Numbers, LibreOffice, or
+upload it to Google Sheets.
+
+New to the layout? Read
+[docs/reading-your-spreadsheet.md](docs/reading-your-spreadsheet.md) —
+it walks through each sheet (Summary, Raw Log, weekly blocks, Exercise
+Progress, e1RM Charts, Exercise Index) and suggests what to do with
+each.
+
+### Stuck?
+
+- [docs/faq.md](docs/faq.md) — non-technical questions ("is this safe?",
+  "do I need to code?", "can I use this on my coach's account?").
+- [docs/troubleshooting.md](docs/troubleshooting.md) — concrete fixes
+  for common errors.
+- [scraper/README.md](scraper/README.md) — full browser-side reference.
 
 ## What gets extracted
 
