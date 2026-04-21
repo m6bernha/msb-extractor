@@ -54,7 +54,11 @@ msb_day_details*.json
 msb_calendar_html*.json
 msb_capture*.json
 !docs/examples/demo_*.json
-captures/
+# Ignore user data inside captures/, but keep the folder (and its inner
+# .gitignore) tracked so instructions referencing captures/*.json work on
+# first checkout.
+captures/*
+!captures/.gitignore
 out/
 *.local.json
 

@@ -3,18 +3,31 @@
 Context for the next person (or AI agent) picking up the browser-side
 capture script at [scraper/msb-scraper.js](../../scraper/msb-scraper.js).
 
-> **Status, 2026-04-18 (v3 shipped)**: after a 3-hour v2 run confirmed
-> the iframe-per-day approach was not portfolio-grade, v3 was
+> **This is a developer-facing notes document.** Users running the tool
+> for the first time should start with the [README](../../README.md).
+> The sections below mix current status (v4) with archived pain points
+> and priorities from v2/v3; everything labelled "What works today
+> (schemaVersion 2)", "Known pain points", and the P0/P1/P2/P3 lists
+> under "Priorities for the next iteration" is **historical context**,
+> kept for future contributors who want to understand why the current
+> architecture looks the way it does. **All of the concrete pain points
+> listed there — no completion signal, no progress object, no heartbeat,
+> no abort, iframe churn, resume, silent CDN failures — are resolved in
+> v4.**
+
+> **Status, 2026-04-18 (v3 — superseded)**: after a 3-hour v2 run
+> confirmed the iframe-per-day approach was not portfolio-grade, v3 was
 > rewritten to parallelise everything and to try a direct
 > `/actions/refresh?modal[type]=…` endpoint probe before falling back
 > to the iframe pool. Target runtime dropped from hours to **2-4
 > minutes** on the fast path (probe hits), **30-60 minutes** on the
-> slow path (probe misses, iframe pool runs).
+> slow path (probe misses, iframe pool runs). v3 was superseded by v4
+> (see below) once we confirmed MSB's JSON API could be called directly
+> — the iframe pool is no longer shipped.
 >
 > The following items from the Chrome PM session's 15-item list landed
 > in v3: **1, 2, 4, 7, 8, 9, 10, 11, 12** and a lightweight version of
 > **14** (textarea/innermost-text extractor for the modal response).
-> Remaining items are tracked below.
 
 ## What shipped in v4 (2026-04-20)
 
@@ -125,7 +138,14 @@ From the Chrome PM list:
   pre-encoded bookmarklet so no runtime fetch to
   `raw.githubusercontent.com` is needed.
 
-## What works today (schemaVersion 2)
+## Historical: what worked under schemaVersion 2
+
+> The sections below describe v2 (iframe-per-day HTML scraping) and the
+> pain points that drove the v3 and v4 rewrites. They remain useful for
+> understanding *why* the current scraper looks the way it does. Every
+> concrete problem listed from here down is resolved in v4.
+
+### What worked under schemaVersion 2
 
 - Fetch-based capture of every MSB monthly calendar page and every
   day-detail page in a 24-month window via the user's logged-in cookies.

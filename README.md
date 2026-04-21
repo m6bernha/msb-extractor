@@ -71,7 +71,7 @@ send your data anywhere.
    training day in a 24-month window (sets, loads, RPEs, complete per-set
    comments) and saves one `msb_capture.json` file to your Downloads folder.
    End-to-end runtime: **under one minute.**
-2. **Parse.** Run `python -m msb_extractor parse msb_capture.json -o training.xlsx`.
+2. **Parse.** Run `python -m msb_extractor parse captures/msb_capture.json -o captures/training_log.xlsx`.
 3. **Open.** That's it. Open the xlsx in any spreadsheet app.
 
 The spreadsheet includes a flat **Raw Log** you can pivot on, one
@@ -89,8 +89,12 @@ This tool needs **Python 3.11 or newer**. Open a terminal and type:
 
 ```bash
 python --version       # Windows / most setups
-python3 --version      # macOS if the above fails
+python3 --version      # macOS, Linux, or Windows Store Python
 ```
+
+If neither command prints a version ≥ 3.11, follow the OS-specific
+install notes below. On Windows, the Microsoft Store install of Python
+often only responds to `python3`; try both.
 
 If you see `Python 3.11.x` or higher, you're good. If you see anything
 else — "command not found", "Python was not found", or a version below
@@ -127,11 +131,14 @@ the CLI into it):
 ```bash
 # create an isolated Python environment
 python -m venv .venv
+
+# Activate it. Pick the line that matches your shell; delete the '#':
 source .venv/bin/activate                    # macOS / Linux
 # .venv\Scripts\activate                     # Windows PowerShell / cmd
 # source .venv/Scripts/activate              # Windows Git Bash
 
-# install the package
+# install the package (drops the msb-extractor and merge-captures
+# commands into the active venv)
 pip install -e .
 ```
 
@@ -160,14 +167,27 @@ path. If `.venv\Scripts\activate` fails on Windows PowerShell with
    navigate to a month you haven't viewed this session). This forces MSB to
    issue a fresh API call, which the scraper then snatches the token from.
 9. The widget advances to `phase: api` and counts up to 25 months. Typical
-   runtime is 30-60 seconds end-to-end.
+   runtime is 30-60 seconds end-to-end. (The count is 25 for a 24-month
+   window because it includes the current, partially-complete month.)
 10. Your browser downloads `msb_capture.json` to its default download
-    folder. Move or copy that file somewhere you can find it (the repo's
-    `captures/` folder is a convenient choice — it's already gitignored).
+    folder. On Windows that is usually `C:\Users\<you>\Downloads`; on
+    macOS, `~/Downloads`; on Linux, whatever your browser is configured
+    to use.
+11. **Move `msb_capture.json` into the `captures/` folder at the root of
+    this repo.** This folder ships with the repo (its contents are
+    gitignored, so your data is never committed). Every command and
+    helper script below assumes the capture lives at
+    `captures/msb_capture.json`.
 
 **If step 8 times out** (`token_capture_timeout`), reload the MSB page (`F5`),
 re-paste the scraper, and click a calendar day within 15 seconds of pasting.
 Full troubleshooting lives in [scraper/README.md](scraper/README.md).
+
+**If your browser does not download anything**, run `window._msbDownload()`
+in the same DevTools console — this re-saves the capture the scraper
+already has. If you ran the scraper more than a few seconds ago, paste
+it again (the capture is cleared from the page as soon as the file
+reaches disk).
 
 ### Step 3 — Turn the capture into a spreadsheet
 
@@ -252,6 +272,11 @@ A sample output is checked into [docs/examples/demo_training_log.xlsx](docs/exam
 
 ## CLI reference
 
+> Run these with your venv activated (see [Step 1](#step-1--get-the-tool))
+> or prefix them with `python -m msb_extractor` / `python -m tools.merge_captures`.
+> A `command not found: msb-extractor` error almost always means the venv
+> isn't active in the current terminal session — reactivate it.
+
 ```
 msb-extractor parse INPUT.json [OPTIONS]
 
@@ -265,12 +290,18 @@ msb-extractor info INPUT.json
   Prints a summary of a capture JSON without writing any files.
   Useful for confirming you've captured what you think you've captured.
 
-msb-extractor --version
+msb-extractor -V              # or --version
 msb-extractor --help
 ```
 
-For stitching an initial capture together with follow-up gap-fill runs, see
-[`tools/merge_captures.py`](tools/merge_captures.py) — `python -m tools.merge_captures a.json b.json -o merged.json`.
+For stitching an initial capture together with follow-up gap-fill runs:
+
+```
+merge-captures a.json b.json -o merged.json
+# or: python -m tools.merge_captures a.json b.json -o merged.json
+```
+
+Full usage: [`tools/merge_captures.py`](tools/merge_captures.py).
 
 ## Configuration
 
@@ -288,6 +319,8 @@ use familiar names instead of the coach's verbatim labels, point
 
 ```yaml
 # rename.yaml -- maps source names to display names.
+# Keys with parentheses, colons, or other YAML metacharacters must be
+# quoted. Plain ASCII keys like "Bench Press" do not need quotes.
 "Competition (bench)": "Flat Barbell Bench Press"
 "Competition (squat)": "Back Squat"
 "Competition (deadlift)": "Conventional Deadlift"
@@ -314,6 +347,7 @@ var CONFIG = {
   requestTimeoutMs: 20000,
   authToken: null,                  // set a JWT here to bypass auto-capture
   tokenCaptureTimeoutMs: 15000,
+  tokenPokeIntervalMs: 1500,        // how often to nudge MSB for a fresh API call
   heartbeatMs: 10000,
   showWidget: true,
   downloadFilename: 'msb_capture.json',
@@ -361,9 +395,10 @@ MyStrengthBook account. Please read this section before using it.
   multiple athletes, treat their data as theirs, not yours. Get permission
   before extracting, and do not publish captures or spreadsheets that name
   other people's training data.
-- **Platform drift.** MSB can change their HTML structure at any time and
-  the scraper or parser may stop working without notice. There is no
-  stability guarantee.
+- **Platform drift.** MSB can change their API schema, authentication
+  flow, endpoint paths, or HTML layout at any time and the scraper or
+  parser may stop working without notice. There is no stability
+  guarantee.
 - **No warranty.** This software is provided "as is", without warranty of
   any kind. See [LICENSE](LICENSE).
 

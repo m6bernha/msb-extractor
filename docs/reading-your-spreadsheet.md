@@ -7,11 +7,27 @@ A fully-populated synthetic example lives at
 [docs/examples/demo_training_log.xlsx](examples/demo_training_log.xlsx) —
 open that alongside this page if you don't have your own capture yet.
 
+**Tab order in the file (left to right):** Raw Log → Week YYYY-MM-DD
+(one tab per training week) → Exercise Progress → e1RM Charts →
+Exercise Index → Summary. This page groups them by purpose rather than
+by tab position; use the section links below to jump around.
+
+- [Summary](#summary) — the cover page. Open this first.
+- [Raw Log](#raw-log) — flat, one-row-per-set query surface.
+- [Week YYYY-MM-DD sheets](#week-yyyy-mm-dd-sheets-one-per-training-week) — weekly
+  training blocks in the familiar Jeff Nippard layout.
+- [Exercise Progress](#exercise-progress) — top set per training day
+  per exercise.
+- [e1RM Charts](#e1rm-charts) — line charts of estimated 1RM over time.
+- [Exercise Index](#exercise-index) — every exercise you've done,
+  ranked.
+
 ---
 
 ## Summary
 
-The cover page. Shows:
+The rightmost tab in the file; it's the cover page when you go looking
+for one. Shows:
 
 - Generated-at timestamp (when you ran the parser)
 - Captured-at timestamp (when the browser scraper ran)
